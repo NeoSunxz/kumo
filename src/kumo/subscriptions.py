@@ -6,6 +6,7 @@
   有码与无码是两套路径 (无码在 ``/uncensored/`` 下).
 - JavDB: 演员、系列、片商、发行商、导演、番号前缀的作品列表, 每页 40 部, 按发行日期倒序,
   含已公布未发行的作品 (日期在未来), 因此新作出现得比 JavBus 早.
+  标签页 (``/tags?c2=67&c4=57``, 多个 ``cN`` 参数即组合标签) 需要登录, 请求带上配置的 JavDB Cookie.
 
 订阅以页面地址标识, 用户直接粘贴资料站上对应页面的地址即可.
 """
@@ -15,7 +16,7 @@ from __future__ import annotations
 import html
 import re
 from dataclasses import dataclass, field
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import parse_qsl, urljoin, urlsplit
 
 from .magnets import JAVBUS, JAVDB, Fetcher, SiteError, javbus_get
 
@@ -27,6 +28,7 @@ KIND_LABELS = {
     "director": "导演",
     "genre": "类别",
     "code": "番号前缀",
+    "tag": "标签",
 }
 SOURCE_LABELS = {"javbus": "JavBus", "javdb": "JavDB"}
 
@@ -37,6 +39,9 @@ _JAVDB_PATHS = {v: k for k, v in _JAVDB_KINDS.items()}
 _JAVDB_PATH = re.compile(rf"^/({'|'.join(_JAVDB_KINDS)})/([0-9a-zA-Z_-]+)/?$")
 # JavDB 上这些「编号」其实是分类入口而不是具体的演员 / 片商.
 _JAVDB_CATEGORY_IDS = frozenset({"censored", "uncensored", "western"})
+# 标签页: /tags (有码) 或 /tags/<分区>, 查询参数 c1..c10 每个是一类标签, 多个参数即组合标签.
+_JAVDB_TAG_PATH = re.compile(r"^/tags(?:/(uncensored|western|fc2|anime))?/?$")
+_JAVDB_TAG_PARAM = re.compile(r"^c\d{1,2}$")
 
 
 @dataclass(frozen=True)
@@ -51,6 +56,11 @@ class SubscriptionKey:
         return ("无码" if self.uncensored else "") + KIND_LABELS[self.kind]
 
     def page_url(self, page: int = 1) -> str:
+        if self.source == "javdb" and self.kind == "tag":
+            # ident 形如 "uncensored?c2=67&c4=57" 或 "?c2=67"
+            section, _, query = self.ident.partition("?")
+            base = f"{JAVDB}/tags" + (f"/{section}" if section else "")
+            return f"{base}?{query}" + (f"&page={page}" if page > 1 else "")
         if self.source == "javdb":
             return f"{JAVDB}/{_JAVDB_PATHS[self.kind]}/{self.ident}" + (f"?page={page}" if page > 1 else "")
         path = f"{'uncensored/' if self.uncensored else ''}{self.kind}/{self.ident}"
@@ -78,8 +88,8 @@ class ListPage:
 
 
 _HINT = (
-    "请粘贴 JavBus 或 JavDB 上演员、系列、片商、发行商、导演 (JavBus 还有类别, JavDB 还有番号前缀) 页面的地址, "
-    "如 https://www.javbus.com/star/1248 或 https://javdb.com/actors/B85e9"
+    "请粘贴 JavBus 或 JavDB 上演员、系列、片商、发行商、导演 (JavBus 还有类别, JavDB 还有番号前缀与标签) 页面的地址, "
+    "如 https://www.javbus.com/star/1248、https://javdb.com/actors/B85e9 或 https://javdb.com/tags?c2=67&c4=57"
 )
 
 
@@ -89,6 +99,15 @@ def parse_subscription_url(url: str) -> SubscriptionKey:
     if not parts.scheme.startswith("http"):
         raise ValueError(_HINT)
     if "javdb" in (parts.hostname or ""):
+        tag = _JAVDB_TAG_PATH.match(parts.path)
+        if tag:
+            params = sorted(
+                (k, v) for k, v in parse_qsl(parts.query) if _JAVDB_TAG_PARAM.match(k) and v.strip()
+            )
+            if not params:
+                raise ValueError("标签订阅需要先在 JavDB 标签页选好标签, 再复制地址 (地址里应有 c2=67 这样的参数)")
+            query = "&".join(f"{k}={v.strip()}" for k, v in params)
+            return SubscriptionKey(kind="tag", ident=f"{tag.group(1) or ''}?{query}", source="javdb")
         m = _JAVDB_PATH.match(parts.path)
         if not m or m.group(2) in _JAVDB_CATEGORY_IDS:
             raise ValueError(_HINT)
@@ -183,9 +202,16 @@ def parse_javdb_list(text: str, base: str = JAVDB) -> ListPage:
     )
 
 
+def is_javdb_login_redirect(text: str) -> bool:
+    """JavDB 对未登录访问标签页只返回一行跳转脚本."""
+    return len(text) < 200 and "/login" in text
+
+
 async def fetch_list(fetcher: Fetcher, key: SubscriptionKey, page: int = 1) -> ListPage:
     if key.source == "javdb":
         status, text = await fetcher.get_text(key.page_url(page))
+        if is_javdb_login_redirect(text):
+            raise SiteError("JavDB 要求登录: 请在设置里填写 JavDB Cookie (登录后从浏览器复制), 或 Cookie 已过期")
         parse = parse_javdb_list
     else:
         status, text = await javbus_get(fetcher, key.page_url(page))

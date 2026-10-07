@@ -5,12 +5,15 @@
 <div class="card">
   <h2>添加订阅</h2>
   <form method="post" action="/subscriptions" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-    <input type="text" name="url" placeholder="粘贴 JavBus 或 JavDB 的演员 / 系列 / 片商 / 发行商 / 导演页面地址" style="flex:1;min-width:260px">
+    <input type="text" name="url" placeholder="粘贴 JavBus 或 JavDB 的演员 / 系列 / 片商 / 发行商 / 导演 / 标签页面地址" style="flex:2;min-width:260px">
+    <input type="text" name="name" placeholder="名称（可选，标签订阅建议填写）" style="flex:1;min-width:140px">
     <label class="check" style="margin:0"><input type="checkbox" name="auto_search" value="1"> 新作自动搜磁力</label>
     <button class="primary">添加</button>
   </form>
   <p class="muted" style="margin:8px 0 0">例如 https://www.javbus.com/star/1248、https://javdb.com/actors/B85e9、
-    https://javdb.com/makers/zKW，以及 JavDB 的番号前缀 https://javdb.com/video_codes/MNGS；JavBus 的无码作品用 /uncensored/ 开头的地址。
+    https://javdb.com/makers/zKW，以及 JavDB 的番号前缀 https://javdb.com/video_codes/MNGS；JavBus 的无码作品用 /uncensored/ 开头的地址。<br>
+    <b>JavDB 标签</b>：在 JavDB 的标签页勾选想要的标签（可以多选组合，如「辣妹 + 美臀」），再复制地址栏粘贴到这里，如 https://javdb.com/tags?c2=67&amp;c4=57；
+    无码、欧美、FC2 的标签页地址分别以 /tags/uncensored、/tags/western、/tags/fc2 开头。标签页需要登录，请先在设置里填写 JavDB Cookie。<br>
     JavDB 会列出已公布未发行的作品，新作比 JavBus 出现得早。同一部作品在两个站都订阅了也只记一次。<br>
     添加后会立即回填最近几页作品，之后按设置的间隔检查更新。
     新作默认只进「新作」列表，在那里勾选后再搜磁力；勾了「新作自动搜磁力」的订阅会把新作直接加入下载队列。</p>
@@ -22,6 +25,9 @@
     {% for sub in subs %}
     <tr{% if not sub.enabled %} class="muted"{% endif %}>
       <td><a href="{{ ('/actresses/' ~ sub.id) if sub.kind == 'star' else ('/releases?sub=' ~ sub.id) }}">{{ sub.name }}</a>
+        <details style="display:inline"><summary class="muted" style="display:inline;cursor:pointer;font-size:12px">改名</summary>
+          <form method="post" action="/subscriptions/{{ sub.id }}/rename" style="display:flex;gap:4px;margin-top:4px">
+            <input type="text" name="name" value="{{ sub.name }}" style="width:160px"><button>保存</button></form></details>
         {% if sub.last_error %}<br><span style="color:var(--bad)">{{ sub.last_error }}</span>{% endif %}</td>
       <td class="muted">{{ SOURCE_LABELS.get(sub.source, sub.source) }}</td>
       <td>{{ ('无码' if sub.uncensored else '') ~ KIND_LABELS.get(sub.kind, sub.kind) }}</td>

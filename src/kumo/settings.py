@@ -48,6 +48,8 @@ class Settings(BaseModel):
     sites: list[str] = Field(default_factory=lambda: ["sukebei", "javbus", "javdb", "sehuatang"])
     scrape_proxy: str = ""
     """刮削磁力站点用的代理, 如 ``http://user:pass@host:port``; 为空则直连."""
+    javdb_cookie: str = ""
+    """登录 JavDB 后从浏览器复制的 Cookie (至少含 ``_jdb_session``); 标签订阅需要."""
     flaresolverr_url: str = ""
     """遇到 Cloudflare 验证时改用 FlareSolverr, 如 ``http://192.168.100.110:8191``."""
     no_magnet_retry_hours: float = Field(default=24.0, ge=1)

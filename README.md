@@ -49,6 +49,8 @@ services:
 - JavBus: 女优、系列、片商、发行商、导演、类别 (无码用 `/uncensored/` 开头的地址), 如 `https://www.javbus.com/star/1248`
 - JavDB: 演员、系列、片商、发行商、导演、番号前缀, 如 `https://javdb.com/actors/B85e9`、`https://javdb.com/video_codes/MNGS`;
   JavDB 列表含已公布未发行的作品, 新作比 JavBus 出现得早
+- JavDB 标签 (可组合): 在 JavDB 标签页勾选标签后复制地址, 如 `https://javdb.com/tags?c2=67&c4=57`;
+  标签页需要登录, 先在设置里填 JavDB Cookie
 
 同一番号只记一次, 同一女优在两个站都订阅也不会重复.
 kumo 定期检查这些页面, 新作进入「新作」列表; 在那里勾选后「去搜磁力」, 才加入下载队列.

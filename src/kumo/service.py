@@ -92,7 +92,7 @@ class Service:
         if self.repo.owned(wanted.number):
             self.repo.update_wanted(wanted.id, status=WantedStatus.OWNED, note="115 目录中已有", searched_at=time.time())
             return WantedStatus.OWNED
-        fetcher = Fetcher(proxy=s.scrape_proxy, flaresolverr_url=s.flaresolverr_url)
+        fetcher = self._fetcher()
         found: list[Candidate] = []
         errors: list[str] = []
         try:
@@ -162,10 +162,13 @@ class Service:
 
     def _fetcher(self) -> Fetcher:
         s = self.settings
-        return Fetcher(proxy=s.scrape_proxy, flaresolverr_url=s.flaresolverr_url)
+        return Fetcher(proxy=s.scrape_proxy, flaresolverr_url=s.flaresolverr_url, javdb_cookie=s.javdb_cookie)
 
-    async def add_subscription(self, url: str, *, auto_search: bool = False) -> Subscription:
-        """按页面地址新增订阅: 先取第一页拿到名称 (同时验证地址可用), 再回填作品."""
+    async def add_subscription(self, url: str, *, auto_search: bool = False, name: str = "") -> Subscription:
+        """按页面地址新增订阅: 先取第一页拿到名称 (同时验证地址可用), 再回填作品.
+
+        ``name`` 为空时用页面上的名称; 标签页没有可用的名称, 用户不填时用标签参数代替.
+        """
         key = parse_subscription_url(url)
         fetcher = self._fetcher()
         try:
@@ -175,7 +178,8 @@ class Service:
         sub = self.repo.add_subscription(
             Subscription(
                 source=key.source, kind=key.kind, ident=key.ident, uncensored=key.uncensored,
-                name=first.name or key.ident, auto_search=auto_search, avatar=first.avatar, profile=first.profile,
+                name=name.strip() or (first.name if key.kind != "tag" else "") or key.ident,
+                auto_search=auto_search, avatar=first.avatar, profile=first.profile,
             )
         )
         self.repo.log("info", f"新增订阅: {key.label} {sub.name}")

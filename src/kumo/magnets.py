@@ -29,7 +29,7 @@ class SiteError(Exception):
 class Fetcher:
     """站点 HTTP 访问: 直连 (可走代理), 遇到 Cloudflare 验证且配置了 FlareSolverr 时改由它取页面."""
 
-    def __init__(self, *, proxy: str = "", flaresolverr_url: str = "") -> None:
+    def __init__(self, *, proxy: str = "", flaresolverr_url: str = "", javdb_cookie: str = "") -> None:
         self._client = httpx.AsyncClient(
             proxy=proxy or None,
             headers={"User-Agent": UA, "Accept-Language": "zh-CN,zh;q=0.9,ja;q=0.8"},
@@ -38,6 +38,8 @@ class Fetcher:
         )
         # JavBus 默认隐藏一部分条目; existmag=all 让详情页与磁力列表完整显示.
         self._client.cookies.set("existmag", "all", domain=".javbus.com")
+        for name, value in parse_cookie_header(javdb_cookie):
+            self._client.cookies.set(name, value, domain=".javdb.com")
         self._solver = flaresolverr_url.rstrip("/")
 
     async def aclose(self) -> None:
@@ -82,6 +84,21 @@ class Fetcher:
             raise SiteError(f"FlareSolverr 失败: {str(data.get('message', ''))[:120]}")
         solution = data.get("solution") or {}
         return int(solution.get("status") or 0), solution.get("response") or ""
+
+
+def parse_cookie_header(text: str) -> list[tuple[str, str]]:
+    """浏览器里复制的 ``a=1; b=2`` 形式; 也接受只粘贴了值 (视为 ``_jdb_session``)."""
+    text = text.strip().removeprefix("Cookie:").strip()
+    if not text:
+        return []
+    if "=" not in text:
+        return [("_jdb_session", text)]
+    pairs = []
+    for part in text.split(";"):
+        name, sep, value = part.strip().partition("=")
+        if sep and name.strip():
+            pairs.append((name.strip(), value.strip()))
+    return pairs
 
 
 def _is_cloudflare_block(resp: httpx.Response) -> bool:

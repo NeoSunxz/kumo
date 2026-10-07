@@ -55,6 +55,10 @@
     <label><span>每次检查最多翻几页</span><input type="number" name="subs_pages" value="{{ s.subs_pages }}" min="1" max="10"></label>
     <label><span>新订阅首次回填几页（每页 30 部）</span><input type="number" name="subs_initial_pages" value="{{ s.subs_initial_pages }}" min="1" max="30"></label>
   </div>
+  <label><span>JavDB Cookie（标签订阅需要登录；登录 JavDB 后在浏览器开发者工具里复制 Cookie，至少包含 _jdb_session）
+    {% if s.javdb_cookie %}<b class="ok">已填写</b>，留空保持不变{% endif %}</span>
+    <input type="password" name="javdb_cookie" value="" placeholder="{{ '••••••（已保存）' if s.javdb_cookie else '_jdb_session=...' }}" autocomplete="off"></label>
+  {% if s.javdb_cookie %}<label class="check"><input type="checkbox" name="clear_javdb_cookie"> 清除已保存的 JavDB Cookie</label>{% endif %}
   <p class="muted" style="margin:0">订阅在「爬取 → 订阅」页面添加。请求间隔与下面的论坛爬取共用。</p>
 </div>
 

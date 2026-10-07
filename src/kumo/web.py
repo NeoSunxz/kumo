@@ -215,6 +215,10 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
                 sites=[name for name in SEARCH_SOURCES if data.get(f"site_{name}")],
                 scrape_proxy=data.get("scrape_proxy", ""),
                 flaresolverr_url=data.get("flaresolverr_url", ""),
+                # 不改动时表单提交空串: 留空表示保持原值, 「清除」勾选框才删除.
+                javdb_cookie=""
+                if "clear_javdb_cookie" in data
+                else (data.get("javdb_cookie") or svc(request).settings.javdb_cookie),
                 no_magnet_retry_hours=float(data.get("no_magnet_retry_hours") or 24),
                 size_min_gb=float(data.get("size_min_gb") or 0),
                 size_max_gb=float(data.get("size_max_gb") or 0),
@@ -348,13 +352,27 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
         return page(request, "subscriptions.html", subs=s.repo.subscriptions(), base=base, message=message)
 
     @app.post("/subscriptions")
-    async def add_subscription(request: Request, url: Annotated[str, Form()], auto_search: Annotated[str, Form()] = "") -> Response:
+    async def add_subscription(
+        request: Request,
+        url: Annotated[str, Form()],
+        auto_search: Annotated[str, Form()] = "",
+        name: Annotated[str, Form()] = "",
+    ) -> Response:
         s = svc(request)
         try:
-            sub = await s.add_subscription(url, auto_search=bool(auto_search))
+            sub = await s.add_subscription(url, auto_search=bool(auto_search), name=name)
         except (ValueError, SiteError) as exc:
             return page(request, "subscriptions.html", subs=s.repo.subscriptions(), base=str(request.base_url), message=f"添加失败: {exc}")
         asyncio.create_task(s.run_guarded("subs", lambda: s.check_subscription(sub)))
+        return back("/subscriptions")
+
+    @app.post("/subscriptions/{sub_id}/rename")
+    async def rename_subscription(request: Request, sub_id: int, name: Annotated[str, Form()]) -> RedirectResponse:
+        s = svc(request)
+        if s.repo.subscription(sub_id) is None:
+            raise HTTPException(404)
+        if name.strip():
+            s.repo.update_subscription(sub_id, name=name.strip())
         return back("/subscriptions")
 
     @app.post("/subscriptions/{sub_id}/{action}")

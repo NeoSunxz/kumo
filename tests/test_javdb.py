@@ -1,12 +1,20 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+import httpx
 import pytest
+from fastapi.testclient import TestClient
 
 from conftest import fixture_text
-from kumo.magnets import JavDB, SiteError, javdb_detail_path, parse_javdb_magnets
+from kumo import magnets as magnets_module
+from kumo import service as service_module
+from kumo.magnets import Fetcher, JavDB, SiteError, javdb_detail_path, parse_cookie_header, parse_javdb_magnets
 from kumo.models import Release, Subscription, Tag
 from kumo.service import Service
-from kumo.subscriptions import SubscriptionKey, parse_javdb_list, parse_subscription_url
+from kumo.settings import Env
+from kumo.subscriptions import ListPage, SubscriptionKey, fetch_list, parse_javdb_list, parse_subscription_url
+from kumo.web import create_app
 
 # --- 订阅列表 ---
 
@@ -61,11 +69,35 @@ def test_parse_javdb_subscription_url(url: str, expected: SubscriptionKey) -> No
 
 @pytest.mark.parametrize(
     "url",
-    ["https://javdb.com/actors/uncensored", "https://javdb.com/makers/western", "https://javdb.com/v/ZNdBQA", "https://javdb.com/tags?c1=23"],
+    [
+        "https://javdb.com/actors/uncensored",
+        "https://javdb.com/makers/western",
+        "https://javdb.com/v/ZNdBQA",
+        "https://javdb.com/tags",  # 没选标签
+        "https://javdb.com/tags?page=2&sort=1",  # 只有无关参数
+        "https://javdb.com/tags/foo?c2=67",  # 不存在的分区
+    ],
 )
 def test_parse_javdb_subscription_url_rejects(url: str) -> None:
     with pytest.raises(ValueError):
         parse_subscription_url(url)
+
+
+@pytest.mark.parametrize(
+    ("url", "ident"),
+    [
+        ("https://javdb.com/tags?c2=67", "?c2=67"),
+        # 组合标签: 参数排序后作为标识, 同一组合换个顺序粘贴也是同一个订阅; 分页等无关参数丢弃.
+        ("https://javdb.com/tags?c4=57&c2=67&page=3", "?c2=67&c4=57"),
+        ("https://javdb.com/tags?c2=67&c4=57", "?c2=67&c4=57"),
+        ("https://javdb.com/tags?c7=28,168&c2=67", "?c2=67&c7=28,168"),  # 同一类多选
+        ("https://javdb.com/tags/uncensored?c1=23", "uncensored?c1=23"),
+        ("https://javdb.com/tags/western/?c10=1", "western?c10=1"),
+        ("https://javdb.com/tags/fc2?c3=5", "fc2?c3=5"),
+    ],
+)
+def test_parse_javdb_tag_url(url: str, ident: str) -> None:
+    assert parse_subscription_url(url) == SubscriptionKey("tag", ident, source="javdb")
 
 
 def test_javdb_page_url() -> None:
@@ -73,6 +105,83 @@ def test_javdb_page_url() -> None:
     assert key.page_url() == "https://javdb.com/actors/B85e9"
     assert key.page_url(2) == "https://javdb.com/actors/B85e9?page=2"
     assert SubscriptionKey("code", "MNGS", source="javdb").page_url() == "https://javdb.com/video_codes/MNGS"
+    tag = SubscriptionKey("tag", "?c2=67&c4=57", source="javdb")
+    assert tag.page_url() == "https://javdb.com/tags?c2=67&c4=57"
+    assert tag.page_url(2) == "https://javdb.com/tags?c2=67&c4=57&page=2"
+    assert SubscriptionKey("tag", "uncensored?c1=23", source="javdb").page_url() == "https://javdb.com/tags/uncensored?c1=23"
+    assert tag.label == "标签"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("_jdb_session=abc; locale=zh", [("_jdb_session", "abc"), ("locale", "zh")]),
+        ("Cookie: _jdb_session=abc", [("_jdb_session", "abc")]),
+        ("abc123", [("_jdb_session", "abc123")]),  # 只粘贴了值
+        ("  ", []),
+        ("a=1;;=2; b = 3 ", [("a", "1"), ("b", "3")]),
+    ],
+)
+def test_parse_cookie_header(text: str, expected: list[tuple[str, str]]) -> None:
+    assert parse_cookie_header(text) == expected
+
+
+async def test_fetcher_sends_javdb_cookie_only_to_javdb(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen[request.url.host] = request.headers.get("cookie", "")
+        return httpx.Response(200, text="ok")
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(magnets_module.httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **{k: v for k, v in kw.items() if k != "proxy"}))
+    f = Fetcher(javdb_cookie="_jdb_session=secret")
+    await f.get_text("https://javdb.com/tags?c2=67")
+    await f.get_text("https://sukebei.nyaa.si/")
+    await f.aclose()
+    assert "_jdb_session=secret" in seen["javdb.com"]
+    assert "_jdb_session" not in seen["sukebei.nyaa.si"]
+
+
+async def test_tag_page_without_login_reports_clearly() -> None:
+    f = PageFetcher({"/tags": (200, "window.location.href='/login';")})
+    with pytest.raises(SiteError, match="JavDB Cookie"):
+        await fetch_list(f, SubscriptionKey("tag", "?c2=67", source="javdb"))  # type: ignore[arg-type]
+
+
+async def test_add_tag_subscription_uses_given_name(service: Service, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fetch(fetcher: object, key: SubscriptionKey, page: int = 1) -> ListPage:
+        return ListPage(name="標籤", items=[], more=False)
+
+    monkeypatch.setattr(service_module, "fetch_list", fetch)
+    named = await service.add_subscription("https://javdb.com/tags?c4=57&c2=67", name=" 辣妹+美臀 ")
+    assert named.kind == "tag" and named.ident == "?c2=67&c4=57" and named.name == "辣妹+美臀"
+    unnamed = await service.add_subscription("https://javdb.com/tags/uncensored?c1=23")
+    assert unnamed.name == "uncensored?c1=23"  # 标签页没有可用名称, 用参数代替
+    renamed = await service.add_subscription("https://www.javbus.com/star/1", name="自定义")
+    assert renamed.name == "自定义"
+
+
+def test_settings_keep_javdb_cookie_when_left_blank(service: Service, tmp_path: Path) -> None:
+    with TestClient(create_app(Env(data_dir=tmp_path, password=""), service=service)) as c:
+        c.post("/settings", data={"javdb_cookie": "_jdb_session=abc"})
+        assert service.repo.settings().javdb_cookie == "_jdb_session=abc"
+        page = c.get("/settings").text
+        assert "已填写" in page and "_jdb_session=abc" not in page  # 页面上不回显
+        c.post("/settings", data={"javdb_cookie": ""})
+        assert service.repo.settings().javdb_cookie == "_jdb_session=abc"  # 留空保持
+        c.post("/settings", data={"clear_javdb_cookie": "on"})
+        assert service.repo.settings().javdb_cookie == ""
+
+
+def test_rename_subscription(service: Service, tmp_path: Path) -> None:
+    sub = service.repo.add_subscription(Subscription(source="javdb", kind="tag", ident="?c2=67", uncensored=False, name="?c2=67"))
+    with TestClient(create_app(Env(data_dir=tmp_path, password=""), service=service)) as c:
+        c.post(f"/subscriptions/{sub.id}/rename", data={"name": "辣妹"})
+        assert service.repo.subscription(sub.id).name == "辣妹"  # type: ignore[arg-type,union-attr]
+        c.post(f"/subscriptions/{sub.id}/rename", data={"name": "  "})
+        assert service.repo.subscription(sub.id).name == "辣妹"  # type: ignore[arg-type,union-attr]
+        assert c.post("/subscriptions/9999/rename", data={"name": "x"}).status_code == 404
 
 
 # --- 磁力 ---
