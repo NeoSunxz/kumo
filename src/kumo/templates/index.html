@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h2>添加番号</h2>
+  <form method="post" action="/wanted">
+    <textarea name="numbers" placeholder="每行一个, 也可以用逗号分隔; 支持直接粘贴文件名或标题, 会自动识别番号"></textarea>
+    <p><button class="primary">添加并搜索</button>
+      <span class="muted">已在 115 目录里的番号会直接标为「已拥有」</span></p>
+  </form>
+</div>
+
+<div class="card">
+  <div class="filters">
+    <a href="/" class="{% if not status %}on{% endif %}">全部</a>
+    {% for st, label in STATUS_LABELS.items() %}
+      {% if counts.get(st.value) %}<a href="/?status={{ st.value }}" class="{% if status == st.value %}on{% endif %}">{{ label }} {{ counts[st.value] }}</a>{% endif %}
+    {% endfor %}
+  </div>
+  <form method="get" action="/" style="display:flex;gap:8px;margin-bottom:10px">
+    <input type="hidden" name="status" value="{{ status }}">
+    <input type="text" name="q" value="{{ q }}" placeholder="搜索番号">
+    <button>搜索</button>
+  </form>
+  <div class="scroll">
+  <table>
+    <tr><th>番号</th><th>状态</th><th>说明</th><th>来源</th><th>更新</th></tr>
+    {% for w in items %}
+    <tr>
+      <td><a href="/wanted/{{ w.id }}">{{ w.number }}</a></td>
+      <td><span class="badge s-{{ w.status.value }}">{{ STATUS_LABELS[w.status] }}{% if w.status.value == 'downloading' %} {{ w.percent|round|int }}%{% endif %}</span></td>
+      <td class="muted">{{ w.note }}</td>
+      <td class="muted">{{ w.source }}</td>
+      <td class="muted">{{ w.updated_at|ts }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="5" class="muted">没有记录</td></tr>
+    {% endfor %}
+  </table>
+  </div>
+</div>
+
+<div class="card">
+  <h2>立即执行</h2>
+  {% for job, label in [("search","搜索磁力"),("submit","提交云下载"),("tasks","刷新下载进度"),("sync","同步 115 目录"),("feeds","读取 RSS")] %}
+  <form class="inline" method="post" action="/run/{{ job }}"><button>{{ label }}</button></form>
+  {% endfor %}
+</div>
+{% endblock %}

@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}日志 - kumo{% endblock %}
+{% block content %}
+<div class="card">
+  <div class="scroll"><table>
+    <tr><th>时间</th><th>级别</th><th>内容</th></tr>
+    {% for e in events %}
+    <tr><td class="muted" style="white-space:nowrap">{{ e.at|ts }}</td><td>{{ e.level }}</td><td class="break">{{ e.message }}</td></tr>
+    {% else %}
+    <tr><td colspan="3" class="muted">暂无日志</td></tr>
+    {% endfor %}
+  </table></div>
+</div>
+{% endblock %}

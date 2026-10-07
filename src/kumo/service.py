@@ -1,0 +1,322 @@
+"""调度与业务流程.
+
+一个番号的生命周期: pending → (搜索) → queued / need_choice / no_magnet → (提交) → submitted
+→ downloading → done / failed. 任何阶段只要 115 目录同步发现已有该番号, 未提交的条目转为 owned.
+
+所有任务都串行跑在同一个循环里, 每类任务一把锁, 网页上的「立即执行」与定时调度不会重叠.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from collections.abc import Callable
+
+import httpx
+
+from .db import Repo
+from .feeds import parse_feed, torrent_to_magnet
+from .magnets import SITES, Fetcher, SiteError
+from .models import Candidate, LibraryFile, Wanted, WantedStatus, info_hash_of
+from .numbers import extract_number, has_subtitle_suffix
+from .pan115 import FakePan115, NotAuthorized, OpenClient, Pan115, Pan115Error
+from .select import choose, evaluate, merge
+from .settings import Settings
+
+log = logging.getLogger("kumo")
+
+VIDEO_EXTS = frozenset({".mp4", ".mkv", ".avi", ".wmv", ".mov", ".ts", ".m2ts", ".iso", ".rmvb", ".flv", ".webm", ".m4v", ".mpg", ".mpeg"})
+_TICK = 30.0
+_SEARCH_PER_TICK = 5
+
+
+class Service:
+    def __init__(self, repo: Repo, *, client_factory: Callable[[Settings, Repo], Pan115 | None] | None = None) -> None:
+        self.repo = repo
+        self._client_factory = client_factory or _default_client
+        self._client: Pan115 | None = None
+        self._client_app_id: str | None = None
+        self._folder_ids: dict[str, str] = {}
+        self._locks = {name: asyncio.Lock() for name in ("search", "submit", "tasks", "sync", "feeds")}
+        self._last_run: dict[str, float] = {}
+        self._sync_requested = False
+        self._task: asyncio.Task[None] | None = None
+        self.last_error: dict[str, str] = {}
+
+    # --- 115 客户端 ---
+
+    @property
+    def settings(self) -> Settings:
+        return self.repo.settings()
+
+    def client(self) -> Pan115 | None:
+        s = self.settings
+        if self._client is None or self._client_app_id != s.app_id:
+            self._client = self._client_factory(s, self.repo)
+            self._client_app_id = s.app_id
+            self._folder_ids.clear()
+        return self._client
+
+    def open_client(self) -> OpenClient | None:
+        c = self.client()
+        return c if isinstance(c, OpenClient) else None
+
+    async def _folder_id(self, client: Pan115, path: str) -> str:
+        if path not in self._folder_ids:
+            self._folder_ids[path] = await client.folder_id(path)
+        return self._folder_ids[path]
+
+    # --- 番号 ---
+
+    def add_numbers(self, numbers: list[str], source: str = "manual") -> tuple[int, int]:
+        added = skipped = 0
+        for number in numbers:
+            if self.repo.add_wanted(number, source) is None:
+                skipped += 1
+                continue
+            added += 1
+            if self.repo.owned(number):
+                w = self.repo.wanted_by_number(number)
+                assert w is not None
+                self.repo.update_wanted(w.id, status=WantedStatus.OWNED, note="115 目录中已有")
+        return added, skipped
+
+    async def search(self, wanted: Wanted) -> WantedStatus:
+        s = self.settings
+        if self.repo.owned(wanted.number):
+            self.repo.update_wanted(wanted.id, status=WantedStatus.OWNED, note="115 目录中已有", searched_at=time.time())
+            return WantedStatus.OWNED
+        fetcher = Fetcher(proxy=s.scrape_proxy, flaresolverr_url=s.flaresolverr_url)
+        found: list[Candidate] = []
+        errors: list[str] = []
+        try:
+            for site in s.sites:
+                if site not in SITES:
+                    continue
+                try:
+                    found += await SITES[site].search(fetcher, wanted.number)
+                except SiteError as exc:
+                    errors.append(f"{site}: {exc}")
+        finally:
+            await fetcher.aclose()
+        candidates = merge(found)
+        chosen = choose(candidates, wanted.number, s)
+        self.repo.replace_candidates(wanted.id, candidates)
+        now = time.time()
+        if chosen is not None:
+            status, note = WantedStatus.QUEUED, ""
+        elif any(not c.rejected or "番号" not in c.rejected for c in candidates):
+            status, note = WantedStatus.NEED_CHOICE, "没有符合条件的磁力, 请手动选择"
+        else:
+            status, note = WantedStatus.NO_MAGNET, "；".join(errors) or "未搜到磁力"
+        self.repo.update_wanted(
+            wanted.id, status=status, note=note, chosen_id=chosen.id if chosen else None, searched_at=now
+        )
+        return status
+
+    def choose_candidate(self, wanted_id: int, candidate_id: int) -> None:
+        cand = self.repo.candidate(candidate_id)
+        if cand is None or cand.wanted_id != wanted_id:
+            raise ValueError("候选不存在")
+        self.repo.update_wanted(wanted_id, status=WantedStatus.QUEUED, chosen_id=candidate_id, note="手动选择")
+
+    def add_magnet(self, wanted_id: int, magnet: str, title: str = "") -> None:
+        """手动指定磁力 (网页粘贴或输入 RSS 自带)."""
+        wanted = self.repo.wanted(wanted_id)
+        info_hash = info_hash_of(magnet)
+        if wanted is None or info_hash is None:
+            raise ValueError("磁力链接无效")
+        cand = Candidate(site="manual", title=title or wanted.number, magnet=magnet, info_hash=info_hash)
+        evaluate(cand, wanted.number, self.settings)
+        existing = [c for c in self.repo.candidates(wanted_id) if c.info_hash != info_hash]
+        stored = self.repo.replace_candidates(wanted_id, [cand, *existing])
+        self.repo.update_wanted(wanted_id, status=WantedStatus.QUEUED, chosen_id=stored[0].id, note="手动指定磁力")
+
+    # --- 定时任务 ---
+
+    async def run_search(self) -> None:
+        async with self._locks["search"]:
+            s = self.settings
+            for wanted in self.repo.due_for_search(s.no_magnet_retry_hours * 3600, _SEARCH_PER_TICK):
+                status = await self.search(wanted)
+                self.repo.log("info", f"{wanted.number} 搜索完成: {status.value}")
+
+    async def run_submit(self) -> None:
+        async with self._locks["submit"]:
+            s = self.settings
+            queued = list(reversed(self.repo.list_wanted([WantedStatus.QUEUED])))[: s.submit_batch]
+            if not queued:
+                return
+            client = self.client()
+            if client is None or not client.authorized():
+                self.last_error["submit"] = "115 未授权, 待提交的任务会在授权后自动提交"
+                return
+            if not s.download_path:
+                self.last_error["submit"] = "未设置云下载保存目录"
+                return
+            folder = await self._folder_id(client, s.download_path)
+            pairs = [(w, self.repo.candidate(w.chosen_id)) for w in queued if w.chosen_id]
+            pairs = [(w, c) for w, c in pairs if c is not None]
+            results = await client.add_urls([c.magnet for _, c in pairs], folder)
+            by_hash = {r.info_hash: r for r in results if r.info_hash}
+            now = time.time()
+            for i, (w, cand) in enumerate(pairs):
+                r = by_hash.get(cand.info_hash) or (results[i] if len(results) == len(pairs) else None)
+                if r is not None and (r.ok or _already_exists(r.message)):
+                    self.repo.update_wanted(
+                        w.id, status=WantedStatus.SUBMITTED, info_hash=cand.info_hash, submitted_at=now,
+                        note="" if r.ok else "115 中已有同一任务",
+                    )
+                    self.repo.log("info", f"{w.number} 已提交云下载")
+                else:
+                    message = r.message if r else "115 没有返回该链接的结果"
+                    self.repo.update_wanted(w.id, status=WantedStatus.FAILED, note=f"提交失败: {message}")
+                    self.repo.log("warning", f"{w.number} 提交失败: {message}")
+            self.last_error.pop("submit", None)
+
+    async def run_tasks(self) -> None:
+        async with self._locks["tasks"]:
+            active = {w.info_hash: w for w in self.repo.list_wanted([WantedStatus.SUBMITTED, WantedStatus.DOWNLOADING]) if w.info_hash}
+            client = self.client()
+            if not active or client is None or not client.authorized():
+                return
+            page, pages = 1, 1
+            while active and page <= min(pages, 20):
+                tasks, pages = await client.tasks(page)
+                for t in tasks:
+                    w = active.pop(t.info_hash, None)
+                    if w is None:
+                        continue
+                    if t.status == 2:
+                        self.repo.update_wanted(w.id, status=WantedStatus.DONE, percent=100, done_at=time.time(), note="")
+                        self.repo.log("info", f"{w.number} 云下载完成")
+                        self._sync_requested = True
+                    elif t.status == -1:
+                        self.repo.update_wanted(w.id, status=WantedStatus.FAILED, note="115 云下载失败")
+                        self.repo.log("warning", f"{w.number} 云下载失败")
+                    elif t.status == 1:
+                        self.repo.update_wanted(w.id, status=WantedStatus.DOWNLOADING, percent=t.percent)
+                page += 1
+
+    async def run_sync(self) -> None:
+        async with self._locks["sync"]:
+            s = self.settings
+            client = self.client()
+            if client is None or not client.authorized():
+                return
+            for path in s.sync_paths:
+                cid = await self._folder_id(client, path)
+                files: list[LibraryFile] = []
+                async for f in client.walk(cid):
+                    ext = f.name[f.name.rfind(".") :].lower() if "." in f.name else ""
+                    number = extract_number(f.name) if ext in VIDEO_EXTS else None
+                    files.append(
+                        LibraryFile(
+                            fid=f.fid, name=f.name, size=f.size, pick_code=f.pick_code, number=number,
+                            subtitle=bool(number and has_subtitle_suffix(f.name, number)),
+                        )
+                    )
+                self.repo.replace_library_root(path, files)
+                self.repo.log("info", f"同步 {path}: {len(files)} 个文件")
+            self.repo.drop_library_roots_except(s.sync_paths)
+            for w in self.repo.list_wanted([WantedStatus.PENDING, WantedStatus.NO_MAGNET, WantedStatus.NEED_CHOICE, WantedStatus.QUEUED]):
+                if self.repo.owned(w.number):
+                    self.repo.update_wanted(w.id, status=WantedStatus.OWNED, note="115 目录中已有")
+            self._sync_requested = False
+
+    async def run_feeds(self) -> None:
+        async with self._locks["feeds"]:
+            s = self.settings
+            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as http:
+                for feed in s.input_feeds:
+                    try:
+                        resp = await http.get(feed.url)
+                        entries = parse_feed(resp.text)
+                    except (httpx.HTTPError, ValueError) as exc:
+                        self.repo.log("warning", f"读取 RSS 失败 {feed.url}: {exc}")
+                        continue
+                    for entry in entries:
+                        lowered = entry.title.lower()
+                        if feed.include_keywords and not any(k.lower() in lowered for k in feed.include_keywords):
+                            continue
+                        if any(k.lower() in lowered for k in feed.exclude_keywords):
+                            continue
+                        if not self.repo.mark_feed_seen(feed.url, entry.key):
+                            continue
+                        if entry.number is None:
+                            self.repo.log("warning", f"RSS 条目无法识别番号, 已跳过: {entry.title[:80]}")
+                            continue
+                        magnet = entry.magnet
+                        if magnet is None and entry.torrent_url:
+                            try:
+                                torrent = await http.get(entry.torrent_url)
+                                magnet = torrent_to_magnet(torrent.content, entry.title)
+                            except (httpx.HTTPError, ValueError) as exc:
+                                self.repo.log("warning", f"种子下载或解析失败 {entry.title[:60]}: {exc}")
+                        added, _ = self.add_numbers([entry.number], source="rss")
+                        w = self.repo.wanted_by_number(entry.number)
+                        if added and magnet and w is not None and w.status is WantedStatus.PENDING:
+                            self.add_magnet(w.id, magnet, entry.title)
+
+    # --- 调度循环 ---
+
+    def start(self) -> None:
+        self._task = asyncio.create_task(self._loop(), name="kumo-scheduler")
+
+    async def stop(self) -> None:
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+
+    def _due(self, name: str, interval: float) -> bool:
+        return time.time() - self._last_run.get(name, 0) >= interval
+
+    async def tick(self) -> None:
+        s = self.settings
+        jobs: list[tuple[str, float, Callable[[], object]]] = [
+            ("feeds", s.feed_interval_minutes * 60, self.run_feeds),
+            ("search", 0, self.run_search),
+            ("submit", 0, self.run_submit),
+            ("tasks", s.task_poll_minutes * 60, self.run_tasks),
+            ("sync", 0 if self._sync_requested else s.sync_interval_hours * 3600, self.run_sync),
+        ]
+        for name, interval, job in jobs:
+            if not self._due(name, interval):
+                continue
+            self._last_run[name] = time.time()
+            await self.run_guarded(name, job)
+
+    async def run_guarded(self, name: str, job: Callable[[], object]) -> None:
+        try:
+            await job()  # type: ignore[misc]
+            if name != "submit":
+                self.last_error.pop(name, None)
+        except NotAuthorized as exc:
+            self.last_error[name] = str(exc)
+        except (Pan115Error, SiteError, httpx.HTTPError) as exc:
+            self.last_error[name] = str(exc)
+            self.repo.log("error", f"{name}: {exc}")
+        except Exception as exc:  # 调度循环不能因单个任务异常而停止
+            log.exception("job %s failed", name)
+            self.last_error[name] = f"{type(exc).__name__}: {exc}"
+            self.repo.log("error", f"{name}: {type(exc).__name__}: {exc}")
+
+    async def _loop(self) -> None:
+        while True:
+            await self.tick()
+            await asyncio.sleep(_TICK)
+
+
+def _already_exists(message: str) -> bool:
+    return any(k in message for k in ("已存在", "重复", "exist"))
+
+
+def _default_client(s: Settings, repo: Repo) -> Pan115 | None:
+    if s.app_id == "fake":
+        # 联调用: 不连 115, 在内存里模拟.
+        return FakePan115()
+    return OpenClient(s.app_id, repo) if s.app_id else None

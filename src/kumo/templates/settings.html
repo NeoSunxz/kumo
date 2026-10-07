@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}设置 - kumo{% endblock %}
+{% block content %}
+{% if message %}<div class="alert">{{ message }}</div>{% endif %}
+<form method="post" action="/settings">
+<div class="card">
+  <h2>115 开放平台</h2>
+  <div class="grid">
+    <label><span>AppID（填 fake 可在没有 AppID 时用内存模拟联调）</span><input type="text" name="app_id" value="{{ s.app_id }}"></label>
+    <label><span>云下载保存目录（115 内路径）</span><input type="text" name="download_path" value="{{ s.download_path }}" placeholder="/云下载"></label>
+    <label><span>每轮最多提交任务数</span><input type="number" name="submit_batch" value="{{ s.submit_batch }}" min="1" max="50"></label>
+    <label><span>下载进度刷新间隔（分钟）</span><input type="number" step="any" name="task_poll_minutes" value="{{ s.task_poll_minutes }}"></label>
+  </div>
+  <label><span>同步目录（每行一个 115 路径，用于判断已拥有）</span><textarea name="sync_paths">{{ s.sync_paths|join("\n") }}</textarea></label>
+  <label><span>目录同步间隔（小时）</span><input type="number" step="any" name="sync_interval_hours" value="{{ s.sync_interval_hours }}"></label>
+</div>
+
+<div class="card">
+  <h2>磁力刮削</h2>
+  <p>{% for name in sites %}<label class="check"><input type="checkbox" name="site_{{ name }}" {% if name in s.sites %}checked{% endif %}> {{ name }}</label>{% endfor %}</p>
+  <div class="grid">
+    <label><span>刮削代理（可空）</span><input type="text" name="scrape_proxy" value="{{ s.scrape_proxy }}" placeholder="http://user:pass@host:port"></label>
+    <label><span>FlareSolverr 地址（可空）</span><input type="text" name="flaresolverr_url" value="{{ s.flaresolverr_url }}" placeholder="http://192.168.100.110:8191"></label>
+    <label><span>没搜到时多久后重试（小时）</span><input type="number" step="any" name="no_magnet_retry_hours" value="{{ s.no_magnet_retry_hours }}"></label>
+  </div>
+</div>
+
+<div class="card">
+  <h2>磁力选择</h2>
+  <div class="grid">
+    <label><span>最小体积（GB，0 不限）</span><input type="number" step="any" name="size_min_gb" value="{{ s.size_min_gb }}"></label>
+    <label><span>最大体积（GB，0 不限）</span><input type="number" step="any" name="size_max_gb" value="{{ s.size_max_gb }}"></label>
+    <label><span>排除关键词（逗号分隔）</span><input type="text" name="exclude_keywords" value="{{ s.exclude_keywords|join(',') }}"></label>
+  </div>
+  <label class="check"><input type="checkbox" name="prefer_subtitle" {% if s.prefer_subtitle %}checked{% endif %}> 优先中文字幕</label>
+  <label class="check"><input type="checkbox" name="require_subtitle" {% if s.require_subtitle %}checked{% endif %}> 必须有中文字幕（没有就等人工选择）</label>
+  <label class="check"><input type="checkbox" name="allow_4k" {% if s.allow_4k %}checked{% endif %}> 允许 4K</label>
+  <label class="check"><input type="checkbox" name="avoid_h265" {% if s.avoid_h265 %}checked{% endif %}> 尽量避开 H265（网页播放不用转码）</label>
+</div>
+
+<div class="card">
+  <h2>输入 RSS</h2>
+  <label><span>每行一个：地址 | 包含关键词(逗号分隔) | 排除关键词(逗号分隔)，后两段可省略</span>
+    <textarea name="input_feeds">{% for f in s.input_feeds %}{{ f.url }}{% if f.include_keywords or f.exclude_keywords %} | {{ f.include_keywords|join(',') }} | {{ f.exclude_keywords|join(',') }}{% endif %}
+{% endfor %}</textarea></label>
+  <label><span>读取间隔（分钟）</span><input type="number" step="any" name="feed_interval_minutes" value="{{ s.feed_interval_minutes }}"></label>
+</div>
+<button class="primary">保存</button>
+</form>
+{% endblock %}

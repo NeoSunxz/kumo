@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}kumo{% endblock %}</title>
+<style>
+:root {
+  --bg: #f6f7f9; --card: #fff; --fg: #1d2129; --muted: #6b7280; --line: #e5e7eb;
+  --accent: #2563eb; --ok: #15803d; --warn: #b45309; --bad: #b91c1c;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #111318; --card: #1a1d24; --fg: #e5e7eb; --muted: #9ca3af; --line: #2b303b;
+          --accent: #60a5fa; --ok: #4ade80; --warn: #fbbf24; --bad: #f87171; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
+header { background: var(--card); border-bottom: 1px solid var(--line); padding: 10px 16px; display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+header b { font-size: 16px; }
+header nav { display: flex; gap: 14px; flex-wrap: wrap; }
+header .auth { margin-left: auto; font-size: 13px; }
+a { color: var(--accent); text-decoration: none; }
+main { max-width: 1100px; margin: 0 auto; padding: 16px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; margin-bottom: 14px; }
+h2 { font-size: 15px; margin: 0 0 10px; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--muted); font-weight: 500; font-size: 13px; }
+.scroll { overflow-x: auto; }
+input[type=text], input[type=number], input[type=password], textarea, select {
+  width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); font: inherit;
+}
+textarea { min-height: 70px; }
+button, .btn { display: inline-block; padding: 5px 12px; border-radius: 6px; border: 1px solid var(--line); background: var(--card); color: var(--fg); cursor: pointer; font: inherit; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.danger { color: var(--bad); }
+form.inline { display: inline; }
+.muted { color: var(--muted); }
+.badge { display: inline-block; padding: 0 7px; border-radius: 10px; font-size: 12px; border: 1px solid var(--line); white-space: nowrap; }
+.s-done, .s-owned { color: var(--ok); border-color: currentColor; }
+.s-failed, .s-no_magnet { color: var(--bad); border-color: currentColor; }
+.s-need_choice, .s-queued { color: var(--warn); border-color: currentColor; }
+.s-submitted, .s-downloading { color: var(--accent); border-color: currentColor; }
+.tag { font-size: 12px; padding: 0 5px; border-radius: 4px; background: var(--bg); border: 1px solid var(--line); margin-right: 3px; }
+.filters { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+.filters a { padding: 2px 9px; border-radius: 12px; border: 1px solid var(--line); }
+.filters a.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+label { display: block; margin-bottom: 8px; }
+label > span { display: block; color: var(--muted); font-size: 13px; margin-bottom: 2px; }
+.check { display: flex; gap: 6px; align-items: center; }
+.alert { padding: 8px 12px; border-radius: 6px; border: 1px solid var(--warn); color: var(--warn); margin-bottom: 12px; }
+.ok { color: var(--ok); }
+.break { word-break: break-all; }
+</style>
+</head>
+<body>
+<header>
+  <b>kumo</b>
+  <nav>
+    <a href="/">番号</a>
+    <a href="/library">115 目录</a>
+    <a href="/auth">115 授权</a>
+    <a href="/settings">设置</a>
+    <a href="/events">日志</a>
+    <a href="/rss.xml">RSS</a>
+  </nav>
+  <span class="auth">{% if authorized %}<span class="ok">● 115 已授权</span>{% else %}<a href="/auth">○ 115 未授权</a>{% endif %}</span>
+</header>
+<main>
+{% for name, msg in errors.items() %}<div class="alert">{{ name }}: {{ msg }}</div>{% endfor %}
+{% block content %}{% endblock %}
+<p class="muted" style="font-size:12px">kumo {{ version }}</p>
+</main>
+</body>
+</html>

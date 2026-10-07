@@ -1,0 +1,3 @@
+* text=auto eol=lf
+# 站点原始响应, 保持字节不变
+tests/fixtures/** -text

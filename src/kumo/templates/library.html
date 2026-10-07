@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}115 目录 - kumo{% endblock %}
+{% block content %}
+<div class="card">
+  <h2>同步结果</h2>
+  <table>
+    <tr><th>目录</th><th>文件数</th><th>识别出番号</th><th>总大小</th></tr>
+    {% for r in stats %}
+    <tr><td>{{ r.root }}</td><td>{{ r.files }}</td><td>{{ r.numbered }}</td><td>{{ r.bytes|size }}</td></tr>
+    {% else %}
+    <tr><td colspan="4" class="muted">还没有同步。在设置里配置同步目录并完成 115 授权后会自动同步。</td></tr>
+    {% endfor %}
+  </table>
+  <form class="inline" method="post" action="/run/sync"><button style="margin-top:10px">立即同步</button></form>
+</div>
+<div class="card">
+  <form method="get" action="/library" style="display:flex;gap:8px;margin-bottom:10px">
+    <input type="text" name="q" value="{{ q }}" placeholder="搜索文件名或番号">
+    <button>搜索</button>
+  </form>
+  {% if q %}
+  <div class="scroll"><table>
+    <tr><th>文件</th><th>番号</th><th>字幕</th><th>大小</th><th>目录</th></tr>
+    {% for f in files %}
+    <tr><td class="break">{{ f.name }}</td><td>{{ f.number or '-' }}</td><td>{{ '是' if f.subtitle else '' }}</td><td>{{ f.size|size }}</td><td class="muted">{{ f.root }}</td></tr>
+    {% else %}
+    <tr><td colspan="5" class="muted">没有匹配的文件</td></tr>
+    {% endfor %}
+  </table></div>
+  {% endif %}
+</div>
+{% endblock %}
