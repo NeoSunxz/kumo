@@ -1,0 +1,83 @@
+"""封面与头像的代理与磁盘缓存.
+
+JavBus 的图片校验 Referer, 浏览器从 kumo 的页面直接引用会得到 403; 因此图片一律由 kumo 带上
+对应站点的 Referer 取回, 缓存到数据目录, 之后直接从磁盘返回. 只代理资料站的图片域名,
+不是通用代理.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+from pathlib import Path
+from urllib.parse import urlsplit
+
+import httpx
+
+from .magnets import UA
+
+# 允许代理的图片域名 (含子域) 与取图时使用的 Referer.
+_HOSTS = {
+    "javbus.com": "https://www.javbus.com/",
+    "jdbstatic.com": "https://javdb.com/",
+    "javdb.com": "https://javdb.com/",
+}
+_TYPES = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/gif": ".gif"}
+_MAX_BYTES = 5 * 1024 * 1024
+
+
+class ImageError(Exception):
+    pass
+
+
+def referer_for(url: str) -> str | None:
+    """允许代理时返回该图片应带的 Referer; 不在白名单内返回 ``None``."""
+    parts = urlsplit(url)
+    host = (parts.hostname or "").lower()
+    if parts.scheme not in ("http", "https"):
+        return None
+    for suffix, referer in _HOSTS.items():
+        if host == suffix or host.endswith("." + suffix):
+            return referer
+    return None
+
+
+class ImageCache:
+    def __init__(self, directory: Path) -> None:
+        self._dir = directory
+        self._dir.mkdir(parents=True, exist_ok=True)
+        # 一页封面墙会同时请求几十张图, 限制对源站的并发.
+        self._gate = asyncio.Semaphore(6)
+
+    def _cached(self, key: str) -> Path | None:
+        for ext in _TYPES.values():
+            path = self._dir / f"{key}{ext}"
+            if path.exists():
+                return path
+        return None
+
+    async def get(self, url: str, *, proxy: str = "") -> Path:
+        referer = referer_for(url)
+        if referer is None:
+            raise ImageError("不代理这个地址")
+        key = hashlib.sha1(url.encode()).hexdigest()
+        cached = self._cached(key)
+        if cached:
+            return cached
+        async with self._gate:
+            cached = self._cached(key)  # 等待期间可能已被别的请求取回
+            if cached:
+                return cached
+            try:
+                async with httpx.AsyncClient(proxy=proxy or None, timeout=20.0, follow_redirects=True) as client:
+                    resp = await client.get(url, headers={"User-Agent": UA, "Referer": referer})
+            except httpx.HTTPError as exc:
+                raise ImageError(f"取图失败: {type(exc).__name__}") from exc
+        ctype = resp.headers.get("content-type", "").split(";")[0].strip().lower()
+        if resp.status_code != 200 or ctype not in _TYPES or len(resp.content) > _MAX_BYTES:
+            raise ImageError(f"源站返回 HTTP {resp.status_code} {ctype}")
+        path = self._dir / f"{key}{_TYPES[ctype]}"
+        tmp = path.with_suffix(".part")
+        tmp.write_bytes(resp.content)
+        tmp.replace(path)
+        return path

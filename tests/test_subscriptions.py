@@ -12,15 +12,18 @@ from kumo.magnets import JavBus, SiteError, is_javbus_verify, javbus_get
 from kumo.models import Release, Subscription, WantedStatus
 from kumo.service import Service
 from kumo.settings import Env, Settings
-from kumo.subscriptions import ListedRelease, SubscriptionKey, parse_list, parse_subscription_url
+from kumo.subscriptions import ListedRelease, ListPage, SubscriptionKey, parse_list, parse_subscription_url
 from kumo.web import create_app
 
 # --- 解析 ---
 
 
 def test_parse_star_list() -> None:
-    name, items, more = parse_list(fixture_text("javbus_star_1248.html"))
-    assert name == "春陽モカ" and more is True and len(items) == 30
+    page = parse_list(fixture_text("javbus_star_1248.html"))
+    items = page.items
+    assert page.name == "春陽モカ" and page.more is True and len(items) == 30
+    assert page.avatar == "https://www.javbus.com/pics/actress/1248_a.jpg"
+    assert page.profile == {}  # 这位女优在 JavBus 上没有资料
     first = items[0]
     assert first.number == "VRKM-1902" and first.date == "2026-10-01"
     assert first.url == "https://www.javbus.com/VRKM-1902"
@@ -31,12 +34,29 @@ def test_parse_star_list() -> None:
 
 
 def test_parse_studio_list() -> None:
-    name, items, more = parse_list(fixture_text("javbus_studio_4v.html"))
-    assert name == "ムーディーズ" and len(items) == 30 and items[0].number == "MDVR-444"
+    page = parse_list(fixture_text("javbus_studio_4v.html"))
+    assert page.name == "ムーディーズ" and len(page.items) == 30 and page.items[0].number == "MDVR-444"
+    assert page.avatar is None
 
 
 def test_parse_list_of_unrelated_page() -> None:
-    assert parse_list("<html><title>x</title></html>") == ("", [], False)
+    assert parse_list("<html><title>x</title></html>") == ListPage(name="", items=[], more=False)
+
+
+def test_parse_javbus_profile() -> None:
+    text = (
+        '<title>某女优 - 女優 - 影片 - JavBus</title><div class="avatar-box"><div class="photo-frame">'
+        '<img src="/pics/actress/abc_a.jpg" title="某女优"></div><div class="photo-info"><span class="pb10">某女优</span>'
+        "<p>生日: 2000-01-01</p><p>身高: 160cm</p><p>罩杯: </p></div></div>"
+    )
+    page = parse_list(text)
+    assert page.avatar == "https://www.javbus.com/pics/actress/abc_a.jpg"
+    assert page.profile == {"生日": "2000-01-01", "身高": "160cm"}  # 空值不保留
+
+
+def test_javbus_placeholder_avatar_is_ignored() -> None:
+    text = '<div class="avatar-box"><div class="photo-frame"><img src="/pics/actress/nowprinting.gif"></div></div>'
+    assert parse_list(text).avatar is None
 
 
 @pytest.mark.parametrize(
@@ -127,19 +147,22 @@ class FakeLists:
     calls: list[tuple[str, int]] = []
     fail = False
 
+    avatars: dict[str, str] = {}
+
     @classmethod
-    async def fetch(cls, fetcher: object, key: SubscriptionKey, page: int = 1) -> tuple[str, list[ListedRelease], bool]:
+    async def fetch(cls, fetcher: object, key: SubscriptionKey, page: int = 1) -> ListPage:
         cls.calls.append((key.ident, page))
         if cls.fail:
             raise SiteError("javbus 返回 HTTP 500")
         pages = cls.pages.get((key.kind, key.ident), [])
         items, more = pages[page - 1] if page <= len(pages) else ([], False)
-        return f"名字{key.ident}", items, more
+        avatar = cls.avatars.get(key.ident)
+        return ListPage(name=f"名字{key.ident}", items=items, more=more, avatar=avatar, profile={"身高": "160cm"} if avatar else {})
 
 
 @pytest.fixture
 def lists(monkeypatch: pytest.MonkeyPatch) -> type[FakeLists]:
-    FakeLists.pages, FakeLists.calls, FakeLists.fail = {}, [], False
+    FakeLists.pages, FakeLists.calls, FakeLists.fail, FakeLists.avatars = {}, [], False, {}
     monkeypatch.setattr(service_module, "fetch_list", FakeLists.fetch)
 
     async def no_sleep(_: float) -> None:

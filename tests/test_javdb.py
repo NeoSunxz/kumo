@@ -20,8 +20,9 @@ from kumo.subscriptions import SubscriptionKey, parse_javdb_list, parse_subscrip
     ],
 )
 def test_parse_javdb_list(fixture: str, name: str, first_number: str) -> None:
-    got_name, items, more = parse_javdb_list(fixture_text(fixture))
-    assert got_name == name and more is True and len(items) == 40
+    page = parse_javdb_list(fixture_text(fixture))
+    items = page.items
+    assert page.name == name and page.more is True and len(items) == 40
     assert items[0].number == first_number
     assert items[0].url.startswith("https://javdb.com/v/")
     assert items[0].cover and items[0].cover.startswith("https://")
@@ -31,8 +32,15 @@ def test_parse_javdb_list(fixture: str, name: str, first_number: str) -> None:
 
 def test_javdb_list_includes_announced_titles() -> None:
     # 列表含已公布未发行的作品, 新作比 JavBus 出现得早.
-    _, items, _ = parse_javdb_list(fixture_text("javdb_actors_B85e9.html"))
-    assert items[0].date == "2026-11-03"
+    assert parse_javdb_list(fixture_text("javdb_actors_B85e9.html")).items[0].date == "2026-11-03"
+
+
+def test_javdb_actor_avatar_and_count() -> None:
+    page = parse_javdb_list(fixture_text("javdb_actors_B85e9.html"))
+    assert page.avatar == "https://c0.jdbstatic.com/avatars/b8/B85e9.jpg"
+    assert page.profile == {"作品数": "290"}
+    maker = parse_javdb_list(fixture_text("javdb_makers_zKW.html"))
+    assert maker.avatar is None and maker.profile == {}
 
 
 @pytest.mark.parametrize(

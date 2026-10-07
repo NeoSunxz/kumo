@@ -54,6 +54,26 @@ label > span { display: block; color: var(--muted); font-size: 13px; margin-bott
 .alert { padding: 8px 12px; border-radius: 6px; border: 1px solid var(--warn); color: var(--warn); margin-bottom: 12px; }
 .ok { color: var(--ok); }
 .break { word-break: break-all; }
+/* 女优墙与封面墙 */
+.wall { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+.wall.covers { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
+.tile { background: var(--card); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; display: flex; flex-direction: column; color: var(--fg); }
+.tile:hover { border-color: var(--accent); }
+.tile .pic { aspect-ratio: 3 / 4; background: var(--bg) center / cover no-repeat; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 32px; }
+.wall.covers .pic { aspect-ratio: 16 / 11; background-position: right center; }
+.tile .body { padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.tile .name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile .sub { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile .title { font-size: 12px; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.tile .row { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+.tile.queued { opacity: .55; }
+.tile.upcoming .pic::after { content: "未发行"; position: relative; }
+.pill { font-size: 11px; padding: 0 6px; border-radius: 8px; background: var(--accent); color: #fff; }
+.pill.soon { background: var(--warn); }
+.profile { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+.profile .avatar { width: 125px; aspect-ratio: 3 / 4; border-radius: 8px; background: var(--bg) center / cover no-repeat; flex: none; }
+.profile dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; margin: 6px 0; font-size: 13px; }
+.profile dt { color: var(--muted); }
 </style>
 </head>
 <body>
@@ -67,6 +87,7 @@ label > span { display: block; color: var(--muted); font-size: 13px; margin-bott
   </nav>
   <nav>
     <span class="group">爬取</span>
+    <a href="/actresses">女优</a>
     <a href="/releases">新作</a>
     <a href="/subscriptions">订阅</a>
     <a href="/resources">论坛</a>

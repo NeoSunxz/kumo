@@ -104,6 +104,8 @@ CREATE TABLE IF NOT EXISTS subscription (
     last_error     TEXT NOT NULL DEFAULT '',
     release_count  INTEGER NOT NULL DEFAULT 0,
     created_at     REAL NOT NULL,
+    avatar         TEXT,
+    profile        TEXT NOT NULL DEFAULT '{}',
     UNIQUE (source, kind, ident, uncensored)
 );
 CREATE TABLE IF NOT EXISTS release (
@@ -151,6 +153,10 @@ class Repo:
         cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(resource)")}
         if cols and "type_id" not in cols:
             self._conn.execute("ALTER TABLE resource ADD COLUMN type_id INTEGER")
+        cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(subscription)")}
+        if cols and "avatar" not in cols:
+            self._conn.execute("ALTER TABLE subscription ADD COLUMN avatar TEXT")
+            self._conn.execute("ALTER TABLE subscription ADD COLUMN profile TEXT NOT NULL DEFAULT '{}'")
 
     @contextmanager
     def _tx(self) -> Iterator[sqlite3.Connection]:
@@ -419,9 +425,12 @@ class Repo:
         """新增订阅; 同一页面已订阅时返回已有的那条."""
         with self._tx() as c:
             c.execute(
-                "INSERT OR IGNORE INTO subscription(source, kind, ident, uncensored, name, auto_search, created_at)"
-                " VALUES(?, ?, ?, ?, ?, ?, ?)",
-                (sub.source, sub.kind, sub.ident, int(sub.uncensored), sub.name, int(sub.auto_search), time.time()),
+                "INSERT OR IGNORE INTO subscription(source, kind, ident, uncensored, name, auto_search, created_at,"
+                " avatar, profile) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    sub.source, sub.kind, sub.ident, int(sub.uncensored), sub.name, int(sub.auto_search), time.time(),
+                    sub.avatar, json.dumps(sub.profile, ensure_ascii=False),
+                ),
             )
             row = c.execute(
                 "SELECT * FROM subscription WHERE source = ? AND kind = ? AND ident = ? AND uncensored = ?",
@@ -433,15 +442,23 @@ class Repo:
         row = self._one("SELECT * FROM subscription WHERE id = ?", (sub_id,))
         return Subscription.from_row(row) if row else None
 
-    def subscriptions(self, *, enabled_only: bool = False) -> list[Subscription]:
-        sql = "SELECT * FROM subscription" + (" WHERE enabled = 1" if enabled_only else "") + " ORDER BY kind, name"
-        return [Subscription.from_row(r) for r in self._all(sql)]
+    def subscriptions(self, *, enabled_only: bool = False, kind: str | None = None) -> list[Subscription]:
+        sql, params = "SELECT * FROM subscription WHERE 1=1", []
+        if enabled_only:
+            sql += " AND enabled = 1"
+        if kind:
+            sql += " AND kind = ?"
+            params.append(kind)
+        return [Subscription.from_row(r) for r in self._all(sql + " ORDER BY kind, name", params)]
 
     def update_subscription(self, sub_id: int, **fields: Any) -> None:
         if not fields:
             return
         cols = ", ".join(f"{k} = ?" for k in fields)
-        values = [int(v) if isinstance(v, bool) else v for v in fields.values()]
+        values = [
+            int(v) if isinstance(v, bool) else json.dumps(v, ensure_ascii=False) if isinstance(v, dict) else v
+            for v in fields.values()
+        ]
         with self._tx() as c:
             c.execute(f"UPDATE subscription SET {cols} WHERE id = ?", (*values, sub_id))
 

@@ -10,8 +10,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from collections.abc import Callable
+from dataclasses import dataclass, field
+from datetime import date, timedelta
 
 import httpx
 
@@ -166,13 +169,13 @@ class Service:
         key = parse_subscription_url(url)
         fetcher = self._fetcher()
         try:
-            name, _, _ = await fetch_list(fetcher, key)
+            first = await fetch_list(fetcher, key)
         finally:
             await fetcher.aclose()
         sub = self.repo.add_subscription(
             Subscription(
                 source=key.source, kind=key.kind, ident=key.ident, uncensored=key.uncensored,
-                name=name or key.ident, auto_search=auto_search,
+                name=first.name or key.ident, auto_search=auto_search, avatar=first.avatar, profile=first.profile,
             )
         )
         self.repo.log("info", f"新增订阅: {key.label} {sub.name}")
@@ -191,9 +194,12 @@ class Service:
             for page in range(1, pages + 1):
                 if page > 1:
                     await asyncio.sleep(s.crawl_request_delay)
-                _, listed, more = await fetch_list(fetcher, key, page)
+                listing = await fetch_list(fetcher, key, page)
+                if page == 1 and (listing.avatar or listing.profile):
+                    # 头像与资料会更新 (换头像、补资料), 每次检查顺带刷新.
+                    self.repo.update_subscription(sub.id, avatar=listing.avatar or sub.avatar, profile=listing.profile or sub.profile)
                 seen_any = False
-                for item in listed:
+                for item in listing.items:
                     rel, new = self.repo.add_release(
                         Release(source=sub.source, number=item.number, title=item.title, date=item.date,
                                 cover=item.cover, url=item.url),
@@ -202,7 +208,7 @@ class Service:
                     seen_any |= item.number in known
                     if new and item.number not in known:
                         fresh.append(rel)
-                if seen_any or not more:
+                if seen_any or not listing.more:
                     break
         except SiteError as exc:
             self.repo.update_subscription(sub.id, last_error=str(exc), checked_at=time.time())
@@ -228,6 +234,42 @@ class Service:
                 except SiteError as exc:
                     self.repo.log("warning", f"订阅 {sub.name} 检查失败: {exc}")
                 await asyncio.sleep(s.crawl_request_delay)
+
+    def actress_groups(self) -> list[ActressGroup]:
+        """订阅的女优, 同名的 (同一人在 JavBus 与 JavDB 上的订阅) 合成一组; 有新作的排在前面."""
+        groups: dict[str, list[Subscription]] = {}
+        for sub in self.repo.subscriptions(kind="star"):
+            groups.setdefault(_name_key(sub.name), []).append(sub)
+        out = [self._actress_group(subs) for subs in groups.values()]
+        out.sort(key=lambda g: (g.latest.date or "") if g.latest else "", reverse=True)
+        return out
+
+    def actress_group(self, sub_id: int) -> ActressGroup | None:
+        sub = self.repo.subscription(sub_id)
+        if sub is None or sub.kind != "star":
+            return None
+        key = _name_key(sub.name)
+        return self._actress_group([s for s in self.repo.subscriptions(kind="star") if _name_key(s.name) == key])
+
+    def _actress_group(self, subs: list[Subscription]) -> ActressGroup:
+        # 名称、头像、资料都以最早添加的订阅为准, 后加的只补缺.
+        subs = sorted(subs, key=lambda s: s.id or 0)
+        rows = self.repo.releases(sub_ids=[s.id for s in subs if s.id], limit=100_000)
+        since = (date.today() - timedelta(days=30)).isoformat()
+        profile: dict[str, str] = {}
+        for s in subs:
+            profile.update({k: v for k, v in s.profile.items() if k not in profile})
+        return ActressGroup(
+            name=subs[0].name,
+            subs=subs,
+            avatar=next((s.avatar for s in subs if s.avatar), None),
+            profile=profile,
+            total=len(rows),
+            latest=rows[0][0] if rows else None,
+            recent=sum(1 for r, *_ in rows if r.date and since <= r.date <= date.today().isoformat()),
+            upcoming=sum(1 for r, *_ in rows if r.date and r.date > date.today().isoformat()),
+            queued=sum(1 for _, _, wanted_id, _ in rows if wanted_id),
+        )
 
     def queue_releases(self, release_ids: list[int]) -> int:
         """把选中的新作加入下载队列 (去搜磁力); 返回实际新加入的数量."""
@@ -461,6 +503,32 @@ class Service:
         while True:
             await self.tick()
             await asyncio.sleep(_TICK)
+
+
+@dataclass
+class ActressGroup:
+    """「女优」页面的一张卡片: 同名女优在各站的订阅合成一组."""
+
+    name: str
+    subs: list[Subscription]
+    avatar: str | None
+    profile: dict[str, str] = field(default_factory=dict)
+    total: int = 0
+    latest: Release | None = None
+    recent: int = 0
+    """最近 30 天发行的作品数."""
+    upcoming: int = 0
+    """已公布未发行的作品数 (JavDB 会列出)."""
+    queued: int = 0
+    """已加入下载队列的作品数."""
+
+    @property
+    def sub_ids(self) -> list[int]:
+        return [s.id for s in self.subs if s.id]
+
+
+def _name_key(name: str) -> str:
+    return re.sub(r"\s+", "", name).casefold()
 
 
 def _resource_candidate(r: Resource) -> Candidate:

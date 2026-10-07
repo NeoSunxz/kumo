@@ -12,17 +12,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any
 
-from urllib.parse import parse_qsl, urlencode, urlsplit
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit
 
 import segno
 from fastapi import FastAPI, Form, HTTPException, Request, Response
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 
 from . import __version__
 from .db import Repo
 from .feeds import render_release_rss, render_resource_rss, render_rss
+from .images import ImageCache, ImageError
 from .magnets import SITES, SiteError
 from .models import STATUS_LABELS, TAG_LABELS, WantedStatus, format_size
 from .numbers import parse_input
@@ -38,6 +39,9 @@ SEARCH_SOURCES = [*SITES, "sehuatang"]
 _TEMPLATES = Jinja2Templates(directory=Path(__file__).parent / "templates")
 _TEMPLATES.env.filters["size"] = format_size
 _TEMPLATES.env.filters["ts"] = lambda t: datetime.fromtimestamp(t).strftime("%m-%d %H:%M") if t else "-"
+# 资料站图片经 kumo 代理 (JavBus 校验 Referer, 直接引用会 403).
+_TEMPLATES.env.filters["img"] = lambda url: f"/img?u={quote(url, safe='')}" if url else ""
+_TEMPLATES.env.globals["today"] = lambda: datetime.now().strftime("%Y-%m-%d")
 _TEMPLATES.env.globals.update(
     STATUS_LABELS=STATUS_LABELS, TAG_LABELS=TAG_LABELS, KIND_LABELS=KIND_LABELS, SOURCE_LABELS=SOURCE_LABELS,
     version=__version__,
@@ -52,6 +56,7 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
         svc = service or Service(Repo(env.data_dir / "kumo.db"))
         app.state.service = svc
         app.state.device_auth = None
+        app.state.images = ImageCache(env.data_dir / "img")
         if service is None:
             svc.start()
         yield
@@ -410,10 +415,37 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
         added = s.queue_releases(ids)
         if added:
             asyncio.create_task(s.run_guarded("search", s.run_search))
+        # 回到提交时所在的页面 (新作列表或女优详情), 保留筛选条件, 只替换提示.
         referer = urlsplit(request.headers.get("referer") or "/releases")
+        path = referer.path if referer.path.startswith(("/releases", "/actresses")) else "/releases"
         query = [(k, v) for k, v in parse_qsl(referer.query) if k != "message"]
         query.append(("message", f"已加入下载队列 {added} 部 (已在队列中的跳过)"))
-        return back(f"/releases?{urlencode(query)}")
+        return back(f"{path}?{urlencode(query)}")
+
+    @app.get("/actresses", response_class=HTMLResponse)
+    async def actresses(request: Request, q: str = "") -> HTMLResponse:
+        groups = svc(request).actress_groups()
+        if q.strip():
+            groups = [g for g in groups if q.strip().casefold() in g.name.casefold()]
+        return page(request, "actresses.html", groups=groups, q=q)
+
+    @app.get("/actresses/{sub_id}", response_class=HTMLResponse)
+    async def actress(request: Request, sub_id: int, todo: str = "", message: str = "") -> HTMLResponse:
+        s = svc(request)
+        group = s.actress_group(sub_id)
+        if group is None:
+            raise HTTPException(404)
+        items = s.repo.releases(sub_ids=group.sub_ids, not_queued=todo == "1", limit=2000)
+        rss_url = f"{request.base_url}rss/releases.xml?sub={','.join(map(str, group.sub_ids))}"
+        return page(request, "actress.html", g=group, items=items, todo=todo, message=message, rss_url=rss_url)
+
+    @app.get("/img")
+    async def image(request: Request, u: str) -> Response:
+        try:
+            path = await request.app.state.images.get(u, proxy=svc(request).settings.scrape_proxy)
+        except ImageError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        return FileResponse(path, headers={"Cache-Control": "public, max-age=2592000"})
 
     @app.get("/rss/releases.xml")
     async def rss_releases(

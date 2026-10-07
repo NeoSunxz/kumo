@@ -21,7 +21,7 @@
     <tr><th>名称</th><th>站点</th><th>类型</th><th>作品</th><th>上次检查</th><th>自动搜磁力</th><th>RSS</th><th></th></tr>
     {% for sub in subs %}
     <tr{% if not sub.enabled %} class="muted"{% endif %}>
-      <td><a href="/releases?sub={{ sub.id }}">{{ sub.name }}</a>
+      <td><a href="{{ ('/actresses/' ~ sub.id) if sub.kind == 'star' else ('/releases?sub=' ~ sub.id) }}">{{ sub.name }}</a>
         {% if sub.last_error %}<br><span style="color:var(--bad)">{{ sub.last_error }}</span>{% endif %}</td>
       <td class="muted">{{ SOURCE_LABELS.get(sub.source, sub.source) }}</td>
       <td>{{ ('无码' if sub.uncensored else '') ~ KIND_LABELS.get(sub.kind, sub.kind) }}</td>

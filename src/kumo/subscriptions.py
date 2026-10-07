@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import html
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import urljoin, urlsplit
 
 from .magnets import JAVBUS, JAVDB, Fetcher, SiteError, javbus_get
@@ -66,6 +66,17 @@ class ListedRelease:
     url: str
 
 
+@dataclass
+class ListPage:
+    """一页作品列表, 以及页面顶部的名称、头像与资料 (女优页才有头像与资料)."""
+
+    name: str
+    items: list[ListedRelease]
+    more: bool
+    avatar: str | None = None
+    profile: dict[str, str] = field(default_factory=dict)
+
+
 _HINT = (
     "请粘贴 JavBus 或 JavDB 上演员、系列、片商、发行商、导演 (JavBus 还有类别, JavDB 还有番号前缀) 页面的地址, "
     "如 https://www.javbus.com/star/1248 或 https://javdb.com/actors/B85e9"
@@ -95,10 +106,13 @@ _JB_BOX = re.compile(r'<a class="movie-box" href="([^"]+)">(.*?)</a>', re.S)
 _JB_DATES = re.compile(r"<date>([^<]+)</date>")
 _JB_IMG = re.compile(r'<img src="([^"]+)" title="([^"]*)"')
 _JB_NEXT = re.compile(r'<a id="next" href="[^"]+"')
+_JB_AVATAR = re.compile(r'<div class="avatar-box">\s*<div class="photo-frame">\s*<img src="([^"]+)"')
+_JB_PROFILE_BOX = re.compile(r'<div class="avatar-box">.*?<div class="photo-info">(.*?)</div>', re.S)
+_JB_PROFILE_ITEM = re.compile(r"<p>\s*([^<:：]+?)\s*[:：]\s*([^<]*?)\s*</p>")
 
 
-def parse_list(text: str, base: str = JAVBUS) -> tuple[str, list[ListedRelease], bool]:
-    """JavBus 列表页: 返回 (页面上的名称, 作品列表, 是否还有下一页)."""
+def parse_list(text: str, base: str = JAVBUS) -> ListPage:
+    """JavBus 列表页. 女优页顶部有头像与资料 (生日、身高、罩杯…; 有的女优没有资料)."""
     title = _JB_TITLE.search(text)
     releases: list[ListedRelease] = []
     for href, box in _JB_BOX.findall(text):
@@ -115,7 +129,16 @@ def parse_list(text: str, base: str = JAVBUS) -> tuple[str, list[ListedRelease],
                 url=href,
             )
         )
-    return (html.unescape(title.group(1)) if title else ""), releases, bool(_JB_NEXT.search(text))
+    avatar = _JB_AVATAR.search(text)
+    box = _JB_PROFILE_BOX.search(text)
+    profile = {html.unescape(k): html.unescape(v) for k, v in _JB_PROFILE_ITEM.findall(box.group(1))} if box else {}
+    return ListPage(
+        name=html.unescape(title.group(1)) if title else "",
+        items=releases,
+        more=bool(_JB_NEXT.search(text)),
+        avatar=urljoin(base, avatar.group(1)) if avatar and "nowprinting" not in avatar.group(1) else None,
+        profile={k: v for k, v in profile.items() if v},
+    )
 
 
 # --- JavDB 列表 ---
@@ -126,10 +149,12 @@ _JD_NUMBER = re.compile(r"<strong>([^<]+)</strong>")
 _JD_DATE = re.compile(r'<div class="meta">\s*([0-9]{4}-[0-9]{2}-[0-9]{2})\s*</div>')
 _JD_IMG = re.compile(r'<img[^>]+src="([^"]+)"')
 _JD_NEXT = re.compile(r'<a rel="next" class="pagination-next"')
+_JD_AVATAR = re.compile(r'<span class="avatar" style="background-image: url\(([^)]+)\)')
+_JD_COUNT = re.compile(r'<span class="section-meta">\s*(\d+)\s*部影片\s*</span>')
 
 
-def parse_javdb_list(text: str, base: str = JAVDB) -> tuple[str, list[ListedRelease], bool]:
-    """JavDB 列表页 (演员 / 片商 / 番号前缀 ... 以及搜索结果): 返回 (名称, 作品列表, 是否还有下一页)."""
+def parse_javdb_list(text: str, base: str = JAVDB) -> ListPage:
+    """JavDB 列表页 (演员 / 片商 / 番号前缀 ... 以及搜索结果); 演员页顶部有头像与作品总数."""
     title = _JD_TITLE.search(text)
     releases: list[ListedRelease] = []
     for href, box_title, box in _JD_BOX.findall(text):
@@ -147,10 +172,18 @@ def parse_javdb_list(text: str, base: str = JAVDB) -> tuple[str, list[ListedRele
                 url=urljoin(base, href),
             )
         )
-    return (html.unescape(title.group(1)).strip() if title else ""), releases, bool(_JD_NEXT.search(text))
+    avatar = _JD_AVATAR.search(text)
+    count = _JD_COUNT.search(text)
+    return ListPage(
+        name=html.unescape(title.group(1)).strip() if title else "",
+        items=releases,
+        more=bool(_JD_NEXT.search(text)),
+        avatar=avatar.group(1) if avatar else None,
+        profile={"作品数": count.group(1)} if count else {},
+    )
 
 
-async def fetch_list(fetcher: Fetcher, key: SubscriptionKey, page: int = 1) -> tuple[str, list[ListedRelease], bool]:
+async def fetch_list(fetcher: Fetcher, key: SubscriptionKey, page: int = 1) -> ListPage:
     if key.source == "javdb":
         status, text = await fetcher.get_text(key.page_url(page))
         parse = parse_javdb_list

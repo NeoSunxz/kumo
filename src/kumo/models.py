@@ -201,6 +201,9 @@ class Subscription:
     last_error: str = ""
     release_count: int = 0
     created_at: float = 0.0
+    avatar: str | None = None
+    profile: dict[str, str] = field(default_factory=dict)
+    """资料站页面上的资料 (生日、身高…); 只有女优页有."""
     id: int | None = None
 
     @classmethod
@@ -208,6 +211,7 @@ class Subscription:
         data = dict(row)
         for key in ("uncensored", "enabled", "auto_search"):
             data[key] = bool(data[key])
+        data["profile"] = json.loads(data.get("profile") or "{}")
         return cls(**data)
 
 
