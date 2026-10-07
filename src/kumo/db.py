@@ -459,15 +459,25 @@ class Repo:
         return {r["number"].upper() for r in rows}
 
     def add_release(self, rel: Release, sub_id: int) -> tuple[Release, bool]:
-        """写入作品并关联到订阅; 返回 (作品, 是否是这个订阅新见到的)."""
+        """写入作品并关联到订阅; 返回 (作品, 是否是这个订阅新见到的).
+
+        同一番号只存一行, 不论来自哪个资料站: 同一女优在 JavBus 与 JavDB 上都订阅时, 新作库与 RSS
+        里每部作品只出现一次. 先见到的站点作为来源与链接, 后来的只补全缺失的日期与封面.
+        """
         with self._tx() as c:
-            c.execute(
-                "INSERT INTO release(source, number, title, date, cover, url, first_seen) VALUES(?, ?, ?, ?, ?, ?, ?)"
-                " ON CONFLICT(source, number) DO UPDATE SET title = excluded.title, date = COALESCE(excluded.date, date),"
-                " cover = COALESCE(excluded.cover, cover), url = excluded.url",
-                (rel.source, rel.number, rel.title, rel.date, rel.cover, rel.url, time.time()),
-            )
-            row = c.execute("SELECT * FROM release WHERE source = ? AND number = ?", (rel.source, rel.number)).fetchone()
+            row = c.execute("SELECT * FROM release WHERE number = ?", (rel.number,)).fetchone()
+            if row is None:
+                c.execute(
+                    "INSERT INTO release(source, number, title, date, cover, url, first_seen) VALUES(?, ?, ?, ?, ?, ?, ?)",
+                    (rel.source, rel.number, rel.title, rel.date, rel.cover, rel.url, time.time()),
+                )
+            else:
+                c.execute(
+                    "UPDATE release SET title = CASE WHEN source = ? THEN ? ELSE title END,"
+                    " date = COALESCE(date, ?), cover = COALESCE(cover, ?) WHERE id = ?",
+                    (rel.source, rel.title, rel.date, rel.cover, row["id"]),
+                )
+            row = c.execute("SELECT * FROM release WHERE number = ?", (rel.number,)).fetchone()
             cur = c.execute(
                 "INSERT OR IGNORE INTO release_sub(release_id, subscription_id) VALUES(?, ?)", (row["id"], sub_id)
             )

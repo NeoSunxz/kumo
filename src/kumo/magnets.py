@@ -17,6 +17,7 @@ from urllib.parse import quote, urlencode, urlsplit
 import httpx
 
 from .models import Candidate, Tag, info_hash_of, parse_size
+from .numbers import extract_number
 
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
 
@@ -154,6 +155,7 @@ _TAG_CLASS = {"primary": Tag.HD, "warning": Tag.SUBTITLE}
 
 
 JAVBUS = "https://www.javbus.com"
+JAVDB = "https://javdb.com"
 
 
 def is_javbus_verify(text: str) -> bool:
@@ -242,4 +244,68 @@ def parse_javbus_magnets(text: str) -> list[Candidate]:
     return out
 
 
-SITES: dict[str, MagnetSite] = {s.name: s for s in (Sukebei(), JavBus())}
+# --- JavDB: 搜索番号 → 详情页的磁力列表 ---
+
+_JD_BOX = re.compile(r'<a href="(/v/[0-9a-zA-Z]+)" class="box"[^>]*>(.*?)</a>', re.S)
+_JD_STRONG = re.compile(r"<strong>([^<]+)</strong>")
+_JD_MAGNET = re.compile(
+    r'<a href="(magnet:\?xt=urn:btih:[^"]+)"[^>]*>\s*<span class="name">([^<]*)</span>(.*?)</a>\s*</div>'
+    r'\s*<div class="date"><span class="time">([^<]*)</span>',
+    re.S,
+)
+_JD_TAG = re.compile(r'<span class="tag[^"]*">([^<]+)</span>')
+_JD_META = re.compile(r'<span class="meta">\s*([^<]+?)\s*</span>')
+_JD_TAGS = {"字幕": Tag.SUBTITLE, "高清": Tag.HD}
+
+
+def javdb_detail_path(search_page: str, number: str) -> str | None:
+    """搜索结果里番号完全一致的那部的详情页路径; 只有相近番号时返回 ``None``."""
+    for href, box in _JD_BOX.findall(search_page):
+        strong = _JD_STRONG.search(box)
+        if strong and extract_number(html.unescape(strong.group(1))) == number:
+            return href
+    return None
+
+
+def parse_javdb_magnets(text: str) -> list[Candidate]:
+    out: list[Candidate] = []
+    for magnet, name, body, date in _JD_MAGNET.findall(text):
+        magnet = html.unescape(magnet)
+        info_hash = info_hash_of(magnet)
+        if not info_hash:
+            continue
+        meta = _JD_META.search(body)
+        out.append(
+            Candidate(
+                site="javdb",
+                title=html.unescape(name).strip(),
+                magnet=magnet,
+                info_hash=info_hash,
+                size=parse_size(meta.group(1)) if meta else None,
+                published=date.strip() or None,
+                tags={_JD_TAGS[t.strip()] for t in _JD_TAG.findall(body) if t.strip() in _JD_TAGS},
+            )
+        )
+    return out
+
+
+class JavDB(MagnetSite):
+    name = "javdb"
+    base = JAVDB
+
+    async def search(self, fetcher: Fetcher, number: str) -> list[Candidate]:
+        status, page = await fetcher.get_text(f"{self.base}/search?{urlencode({'q': number, 'f': 'all'})}")
+        if status == 429:
+            raise SiteError("javdb 请求过于频繁")
+        if status != 200:
+            raise SiteError(f"javdb 返回 HTTP {status}")
+        path = javdb_detail_path(page, number)
+        if path is None:
+            return []
+        status, detail = await fetcher.get_text(f"{self.base}{path}")
+        if status != 200:
+            raise SiteError(f"javdb 详情页返回 HTTP {status}")
+        return parse_javdb_magnets(detail)
+
+
+SITES: dict[str, MagnetSite] = {s.name: s for s in (Sukebei(), JavBus(), JavDB())}

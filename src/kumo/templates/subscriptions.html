@@ -5,21 +5,25 @@
 <div class="card">
   <h2>添加订阅</h2>
   <form method="post" action="/subscriptions" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-    <input type="text" name="url" placeholder="粘贴 JavBus 的女优 / 系列 / 片商 / 发行商 / 导演 / 类别页面地址，如 https://www.javbus.com/star/1248" style="flex:1;min-width:260px">
+    <input type="text" name="url" placeholder="粘贴 JavBus 或 JavDB 的演员 / 系列 / 片商 / 发行商 / 导演页面地址" style="flex:1;min-width:260px">
     <label class="check" style="margin:0"><input type="checkbox" name="auto_search" value="1"> 新作自动搜磁力</label>
     <button class="primary">添加</button>
   </form>
-  <p class="muted" style="margin:8px 0 0">无码作品用 /uncensored/ 开头的地址。添加后会立即回填最近几页作品，之后按设置的间隔检查更新。
+  <p class="muted" style="margin:8px 0 0">例如 https://www.javbus.com/star/1248、https://javdb.com/actors/B85e9、
+    https://javdb.com/makers/zKW，以及 JavDB 的番号前缀 https://javdb.com/video_codes/MNGS；JavBus 的无码作品用 /uncensored/ 开头的地址。
+    JavDB 会列出已公布未发行的作品，新作比 JavBus 出现得早。同一部作品在两个站都订阅了也只记一次。<br>
+    添加后会立即回填最近几页作品，之后按设置的间隔检查更新。
     新作默认只进「新作」列表，在那里勾选后再搜磁力；勾了「新作自动搜磁力」的订阅会把新作直接加入下载队列。</p>
 </div>
 
 <div class="card">
   <div class="scroll"><table>
-    <tr><th>名称</th><th>类型</th><th>作品</th><th>上次检查</th><th>自动搜磁力</th><th>RSS</th><th></th></tr>
+    <tr><th>名称</th><th>站点</th><th>类型</th><th>作品</th><th>上次检查</th><th>自动搜磁力</th><th>RSS</th><th></th></tr>
     {% for sub in subs %}
     <tr{% if not sub.enabled %} class="muted"{% endif %}>
       <td><a href="/releases?sub={{ sub.id }}">{{ sub.name }}</a>
         {% if sub.last_error %}<br><span style="color:var(--bad)">{{ sub.last_error }}</span>{% endif %}</td>
+      <td class="muted">{{ SOURCE_LABELS.get(sub.source, sub.source) }}</td>
       <td>{{ ('无码' if sub.uncensored else '') ~ KIND_LABELS.get(sub.kind, sub.kind) }}</td>
       <td>{{ sub.release_count }}</td>
       <td class="muted" style="white-space:nowrap">{{ sub.checked_at|ts }}</td>
@@ -32,7 +36,7 @@
       </td>
     </tr>
     {% else %}
-    <tr><td colspan="7" class="muted">还没有订阅</td></tr>
+    <tr><td colspan="8" class="muted">还没有订阅</td></tr>
     {% endfor %}
   </table></div>
   <form class="inline" method="post" action="/run/subs"><button style="margin-top:10px">全部立即检查</button></form>

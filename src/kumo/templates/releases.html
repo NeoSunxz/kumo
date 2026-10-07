@@ -6,7 +6,7 @@
   <form method="get" action="/releases" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
     <select name="sub" style="width:auto">
       <option value="">全部订阅</option>
-      {% for s in subs %}<option value="{{ s.id }}" {% if sub == s.id|string %}selected{% endif %}>{{ ('无码' if s.uncensored else '') ~ KIND_LABELS.get(s.kind, s.kind) }} · {{ s.name }}</option>{% endfor %}
+      {% for s in subs %}<option value="{{ s.id }}" {% if sub == s.id|string %}selected{% endif %}>{{ SOURCE_LABELS.get(s.source, s.source) }} · {{ ('无码' if s.uncensored else '') ~ KIND_LABELS.get(s.kind, s.kind) }} · {{ s.name }}</option>{% endfor %}
     </select>
     <select name="kind" style="width:auto">
       <option value="">全部类型</option>

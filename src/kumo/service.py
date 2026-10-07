@@ -171,7 +171,7 @@ class Service:
             await fetcher.aclose()
         sub = self.repo.add_subscription(
             Subscription(
-                source="javbus", kind=key.kind, ident=key.ident, uncensored=key.uncensored,
+                source=key.source, kind=key.kind, ident=key.ident, uncensored=key.uncensored,
                 name=name or key.ident, auto_search=auto_search,
             )
         )
@@ -182,7 +182,7 @@ class Service:
         """拉取订阅的作品列表, 返回新见到的作品数."""
         assert sub.id is not None
         s = self.settings
-        key = SubscriptionKey(kind=sub.kind, ident=sub.ident, uncensored=sub.uncensored)
+        key = SubscriptionKey(kind=sub.kind, ident=sub.ident, uncensored=sub.uncensored, source=sub.source)
         known = self.repo.known_release_numbers(sub.id)
         pages = s.subs_pages if known else s.subs_initial_pages
         fresh: list[Release] = []
@@ -195,7 +195,7 @@ class Service:
                 seen_any = False
                 for item in listed:
                     rel, new = self.repo.add_release(
-                        Release(source="javbus", number=item.number, title=item.title, date=item.date,
+                        Release(source=sub.source, number=item.number, title=item.title, date=item.date,
                                 cover=item.cover, url=item.url),
                         sub.id,
                     )

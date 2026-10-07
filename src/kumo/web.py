@@ -28,7 +28,7 @@ from .models import STATUS_LABELS, TAG_LABELS, WantedStatus, format_size
 from .numbers import parse_input
 from .pan115 import DeviceAuth, Pan115Error
 from .sehuatang import Sehuatang
-from .subscriptions import KIND_LABELS
+from .subscriptions import KIND_LABELS, SOURCE_LABELS
 from .service import Service
 from .settings import CrawlForum, Env, InputFeed, Settings
 
@@ -39,7 +39,8 @@ _TEMPLATES = Jinja2Templates(directory=Path(__file__).parent / "templates")
 _TEMPLATES.env.filters["size"] = format_size
 _TEMPLATES.env.filters["ts"] = lambda t: datetime.fromtimestamp(t).strftime("%m-%d %H:%M") if t else "-"
 _TEMPLATES.env.globals.update(
-    STATUS_LABELS=STATUS_LABELS, TAG_LABELS=TAG_LABELS, KIND_LABELS=KIND_LABELS, version=__version__
+    STATUS_LABELS=STATUS_LABELS, TAG_LABELS=TAG_LABELS, KIND_LABELS=KIND_LABELS, SOURCE_LABELS=SOURCE_LABELS,
+    version=__version__,
 )
 
 

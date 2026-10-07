@@ -45,7 +45,7 @@ class Settings(BaseModel):
     sync_interval_hours: float = Field(default=6.0, ge=0.5)
 
     # 磁力刮削; sehuatang 指本地已爬取的资源库, 不发网络请求
-    sites: list[str] = Field(default_factory=lambda: ["sukebei", "javbus", "sehuatang"])
+    sites: list[str] = Field(default_factory=lambda: ["sukebei", "javbus", "javdb", "sehuatang"])
     scrape_proxy: str = ""
     """刮削磁力站点用的代理, 如 ``http://user:pass@host:port``; 为空则直连."""
     flaresolverr_url: str = ""
