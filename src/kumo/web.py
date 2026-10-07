@@ -12,6 +12,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any
 
+from urllib.parse import urlencode
+
 import segno
 from fastapi import FastAPI, Form, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -20,11 +22,12 @@ from pydantic import ValidationError
 
 from . import __version__
 from .db import Repo
-from .feeds import render_rss
+from .feeds import render_resource_rss, render_rss
 from .magnets import SITES
 from .models import STATUS_LABELS, TAG_LABELS, WantedStatus, format_size
 from .numbers import parse_input
 from .pan115 import DeviceAuth, Pan115Error
+from .sehuatang import Sehuatang
 from .service import Service
 from .settings import CrawlForum, Env, InputFeed, Settings
 
@@ -56,7 +59,7 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
     async def basic_auth(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
         if not env.password or request.url.path == "/health":
             return await call_next(request)
-        if request.url.path == "/rss.xml" and secrets.compare_digest(request.query_params.get("key", ""), env.password):
+        if request.url.path.startswith("/rss") and secrets.compare_digest(request.query_params.get("key", ""), env.password):
             return await call_next(request)
         header = request.headers.get("authorization", "")
         if header.startswith("Basic "):
@@ -182,11 +185,13 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
             forums = []
             for line in lines("crawl_forums"):
                 parts = [p.strip() for p in line.split("|")] + [""] * 5
-                if not parts[0].isdigit():
-                    raise ValueError(f"板块编号必须是数字: {line}")
+                fid, sep, typeid = parts[0].partition(":")
+                if not fid.strip().isdigit() or (sep and not typeid.strip().isdigit()):
+                    raise ValueError(f"板块写成「编号」或「编号:分类编号」: {line}")
                 forums.append(
                     CrawlForum(
-                        fid=int(parts[0]),
+                        fid=int(fid),
+                        typeid=int(typeid) if typeid else None,
                         auto_download=parts[1] in ("自动", "是", "auto", "yes", "1"),
                         types=keywords(parts[2]),
                         include_keywords=keywords(parts[3]),
@@ -286,15 +291,30 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
     # --- 论坛爬取的资源 ---
 
     @app.get("/resources", response_class=HTMLResponse)
-    async def resources(request: Request, q: str = "", forum: int | None = None) -> HTMLResponse:
+    async def resources(
+        request: Request, q: str = "", forum: int | None = None, typeid: int | None = None, subtitle: str = ""
+    ) -> HTMLResponse:
         repo = svc(request).repo
+        params = {k: v for k, v in (("fid", forum), ("typeid", typeid), ("subtitle", subtitle), ("q", q.strip())) if v}
+        rss_url = str(request.base_url) + "rss/sehuatang.xml" + ("?" + urlencode(params) if params else "")
+        if env.password:
+            rss_url += ("&" if params else "?") + "key=<密码>"
         return page(
             request,
             "resources.html",
-            items=repo.resources(search=q.strip(), forum_id=forum),
+            items=repo.resources(
+                search=q.strip(),
+                forum_ids=[forum] if forum else None,
+                type_ids=[typeid] if typeid else None,
+                subtitle=True if subtitle == "1" else None,
+            ),
             forums=repo.resource_forums(),
+            types=repo.resource_types(forum) if forum else [],
             q=q,
             forum=forum,
+            typeid=typeid,
+            subtitle=subtitle,
+            rss_url=rss_url,
             crawl_enabled=svc(request).settings.crawl_enabled,
         )
 
@@ -338,8 +358,43 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
         items.sort(key=lambda it: it[0].submitted_at or it[0].updated_at, reverse=True)
         return Response(render_rss(items, link=str(request.base_url)), media_type="application/rss+xml; charset=utf-8")
 
+    @app.get("/rss/sehuatang.xml")
+    async def rss_sehuatang(
+        request: Request,
+        fid: str = "",
+        typeid: str = "",
+        subtitle: str = "",
+        q: str = "",
+        numbered: str = "1",
+        limit: int = 100,
+    ) -> Response:
+        """按参数筛选的论坛资源 RSS; 每组参数就是一个可单独订阅的源."""
+        try:
+            forum_ids = _int_list(fid)
+            type_ids = _int_list(typeid)
+        except ValueError as exc:
+            raise HTTPException(400, "fid / typeid 应为逗号分隔的数字") from exc
+        s = svc(request)
+        items = s.repo.resources(
+            search=q.strip(),
+            forum_ids=forum_ids,
+            type_ids=type_ids,
+            subtitle=True if subtitle == "1" else None,
+            numbered=numbered != "0",
+            with_magnet=True,
+            limit=max(1, min(limit, 500)),
+        )
+        site = Sehuatang(s.settings.crawl_base_url)
+        label = " ".join(x for x in ("sehuatang", fid and f"fid={fid}", typeid and f"typeid={typeid}", q) if x)
+        body = render_resource_rss(items, title=label, link=str(request.url), thread_url=site.thread_url)
+        return Response(body, media_type="application/rss+xml; charset=utf-8")
+
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
 
     return app
+
+
+def _int_list(text: str) -> list[int]:
+    return [int(x) for x in text.replace("，", ",").split(",") if x.strip()]

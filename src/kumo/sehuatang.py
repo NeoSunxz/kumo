@@ -4,7 +4,8 @@ Discuz 论坛, 无 Cloudflare 验证, 但有年龄确认页: 页面里给出 ``s
 ``_safe`` Cookie. 因此请求返回确认页时把 safeid 写进 Cookie 再请求一次.
 
 板块列表只给标题与分类, 磁力与大小在帖子正文里 (「磁力链接：」下的代码块, 【影片容量】字段).
-站点经常更换域名, 地址由配置给出.
+列表默认按最后回复时间排序, 旧帖被回复会顶上来; 爬取一律按发帖时间 (``orderby=dateline``),
+「遇到已爬过的帖子即停止翻页」才成立. 站点经常更换域名, 地址由配置给出.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ from .models import parse_size
 _SAFEID = re.compile(r"var safeid='([^']+)'")
 _ROW = re.compile(r'<tbody id="normalthread_(\d+)">(.*?)</tbody>', re.S)
 _ROW_TITLE = re.compile(r'class="s xst"[^>]*>(.*?)</a>', re.S)
-_ROW_TYPE = re.compile(r"<em>\[<a [^>]*typeid=\d+[^>]*>([^<]+)</a>\]</em>")
+_ROW_TYPE = re.compile(r"<em>\[<a [^>]*typeid=(\d+)[^>]*>([^<]+)</a>\]</em>")
 _ROW_DATE = re.compile(r'<td class="by">\s*<cite>.*?</cite>\s*<em>.*?(?:title="([0-9-]+)"|>([0-9]{4}-[0-9-]+)<)', re.S)
 _FORUM_NAME = re.compile(r"<title>\s*([^<-]+?)\s+-")
 _SUBJECT = re.compile(r'<span id="thread_subject">([^<]+)</span>')
@@ -37,6 +38,7 @@ class ThreadRef:
     title: str
     type_name: str
     posted: str | None
+    type_id: int | None = None
 
 
 @dataclass
@@ -71,7 +73,8 @@ def parse_forum(text: str) -> tuple[str, list[ThreadRef]]:
             ThreadRef(
                 tid=int(tid),
                 title=_text(title.group(1)),
-                type_name=typ.group(1).strip() if typ else "",
+                type_name=typ.group(2).strip() if typ else "",
+                type_id=int(typ.group(1)) if typ else None,
                 posted=(date.group(1) or date.group(2)) if date else None,
             )
         )
@@ -100,6 +103,13 @@ def parse_thread(tid: int, text: str) -> ThreadDetail:
     )
 
 
+def forum_path(fid: int, page: int, typeid: int | None = None) -> str:
+    """按发帖时间排序的板块列表; 给出 ``typeid`` 时只列该分类."""
+    query = f"mod=forumdisplay&fid={fid}&orderby=dateline&page={page}"
+    query += f"&filter=typeid&typeid={typeid}" if typeid else "&filter=author"
+    return f"forum.php?{query}"
+
+
 class Sehuatang:
     def __init__(self, base_url: str) -> None:
         self.base = base_url.rstrip("/")
@@ -120,8 +130,13 @@ class Sehuatang:
             raise SiteError(f"sehuatang 返回 HTTP {status}")
         return text
 
-    async def forum_page(self, fetcher: Fetcher, fid: int, page: int) -> tuple[str, list[ThreadRef]]:
-        return parse_forum(await self._get(fetcher, f"forum-{fid}-{page}.html"))
+    async def forum_page(
+        self, fetcher: Fetcher, fid: int, page: int, typeid: int | None = None
+    ) -> tuple[str, list[ThreadRef]]:
+        return parse_forum(await self._get(fetcher, forum_path(fid, page, typeid)))
+
+    def thread_url(self, tid: int) -> str:
+        return f"{self.base}/thread-{tid}-1-1.html"
 
     async def thread(self, fetcher: Fetcher, tid: int) -> ThreadDetail:
         return parse_thread(tid, await self._get(fetcher, f"thread-{tid}-1-1.html"))

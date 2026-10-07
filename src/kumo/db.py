@@ -76,6 +76,7 @@ CREATE TABLE IF NOT EXISTS resource (
     tid         INTEGER NOT NULL,
     forum_id    INTEGER NOT NULL,
     forum_name  TEXT NOT NULL DEFAULT '',
+    type_id     INTEGER,
     type_name   TEXT NOT NULL DEFAULT '',
     title       TEXT NOT NULL,
     number      TEXT COLLATE NOCASE,
@@ -89,6 +90,7 @@ CREATE TABLE IF NOT EXISTS resource (
     UNIQUE (source, tid)
 );
 CREATE INDEX IF NOT EXISTS ix_resource_number ON resource(number);
+CREATE INDEX IF NOT EXISTS ix_resource_forum ON resource(forum_id, type_id);
 CREATE TABLE IF NOT EXISTS event (
     id       INTEGER PRIMARY KEY,
     at       REAL NOT NULL,
@@ -108,8 +110,15 @@ class Repo:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
+        self._migrate()
         self._conn.executescript(_SCHEMA)
         self._lock = threading.Lock()
+
+    def _migrate(self) -> None:
+        """给旧库补列; 新库由建表语句直接建好."""
+        cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(resource)")}
+        if cols and "type_id" not in cols:
+            self._conn.execute("ALTER TABLE resource ADD COLUMN type_id INTEGER")
 
     @contextmanager
     def _tx(self) -> Iterator[sqlite3.Connection]:
@@ -306,11 +315,11 @@ class Repo:
     def add_resource(self, r: Resource) -> Resource:
         with self._tx() as c:
             c.execute(
-                "INSERT OR IGNORE INTO resource(source, tid, forum_id, forum_name, type_name, title, number, magnet,"
-                " info_hash, size, posted, subtitle, crawled_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT OR IGNORE INTO resource(source, tid, forum_id, forum_name, type_id, type_name, title, number,"
+                " magnet, info_hash, size, posted, subtitle, crawled_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
-                    r.source, r.tid, r.forum_id, r.forum_name, r.type_name, r.title, r.number, r.magnet,
-                    r.info_hash, r.size, r.posted, int(r.subtitle), time.time(),
+                    r.source, r.tid, r.forum_id, r.forum_name, r.type_id, r.type_name, r.title, r.number,
+                    r.magnet, r.info_hash, r.size, r.posted, int(r.subtitle), time.time(),
                 ),
             )
             row = c.execute("SELECT * FROM resource WHERE source = ? AND tid = ?", (r.source, r.tid)).fetchone()
@@ -320,14 +329,34 @@ class Repo:
         row = self._one("SELECT * FROM resource WHERE id = ?", (resource_id,))
         return Resource.from_row(row) if row else None
 
-    def resources(self, *, search: str = "", forum_id: int | None = None, limit: int = 200) -> list[Resource]:
+    def resources(
+        self,
+        *,
+        search: str = "",
+        forum_ids: list[int] | None = None,
+        type_ids: list[int] | None = None,
+        subtitle: bool | None = None,
+        numbered: bool = False,
+        with_magnet: bool = False,
+        limit: int = 200,
+    ) -> list[Resource]:
         sql, params = "SELECT * FROM resource WHERE 1=1", []
         if search:
             sql += " AND (title LIKE ? OR number LIKE ?)"
             params += [f"%{search}%", f"%{search}%"]
-        if forum_id is not None:
-            sql += " AND forum_id = ?"
-            params.append(forum_id)
+        if forum_ids:
+            sql += f" AND forum_id IN ({','.join('?' * len(forum_ids))})"
+            params += forum_ids
+        if type_ids:
+            sql += f" AND type_id IN ({','.join('?' * len(type_ids))})"
+            params += type_ids
+        if subtitle is not None:
+            sql += " AND subtitle = ?"
+            params.append(int(subtitle))
+        if numbered:
+            sql += " AND number IS NOT NULL"
+        if with_magnet:
+            sql += " AND magnet IS NOT NULL"
         sql += " ORDER BY tid DESC LIMIT ?"
         params.append(limit)
         return [Resource.from_row(r) for r in self._all(sql, params)]
@@ -338,7 +367,14 @@ class Repo:
 
     def resource_forums(self) -> list[sqlite3.Row]:
         return self._all(
-            "SELECT forum_id, forum_name, COUNT(*) AS n FROM resource GROUP BY forum_id, forum_name ORDER BY forum_id"
+            "SELECT forum_id, MAX(forum_name) AS forum_name, COUNT(*) AS n FROM resource GROUP BY forum_id ORDER BY forum_id"
+        )
+
+    def resource_types(self, forum_id: int) -> list[sqlite3.Row]:
+        return self._all(
+            "SELECT type_id, MAX(type_name) AS type_name, COUNT(*) AS n FROM resource"
+            " WHERE forum_id = ? AND type_id IS NOT NULL GROUP BY type_id ORDER BY n DESC",
+            (forum_id,),
         )
 
     def link_resource(self, resource_id: int, wanted_id: int) -> None:

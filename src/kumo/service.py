@@ -291,7 +291,7 @@ class Service:
             try:
                 for forum in s.crawl_forums:
                     for page in range(1, s.crawl_pages + 1):
-                        forum_name, refs = await site.forum_page(fetcher, forum.fid, page)
+                        forum_name, refs = await site.forum_page(fetcher, forum.fid, page, forum.typeid)
                         fresh = [r for r in refs if not self.repo.resource_exists("sehuatang", r.tid)]
                         for ref in fresh:
                             await asyncio.sleep(s.crawl_request_delay)
@@ -306,7 +306,8 @@ class Service:
                             res = self.repo.add_resource(
                                 Resource(
                                     source="sehuatang", tid=ref.tid, forum_id=forum.fid, forum_name=forum_name,
-                                    type_name=ref.type_name, title=title, number=number, magnet=detail.magnet,
+                                    type_id=ref.type_id, type_name=ref.type_name, title=title, number=number,
+                                    magnet=detail.magnet,
                                     info_hash=info_hash_of(detail.magnet) if detail.magnet else None,
                                     size=detail.size, posted=detail.posted or ref.posted,
                                     subtitle="字幕" in forum_name or "中文字幕" in title

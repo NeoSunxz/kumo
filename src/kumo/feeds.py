@@ -11,16 +11,19 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Callable
+from datetime import datetime, timedelta, timezone
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from email.utils import formatdate
 from urllib.parse import quote
 from xml.sax.saxutils import escape
 
-from .models import Wanted, info_hash_of
+from .models import Resource, Wanted, format_size, info_hash_of
 from .numbers import extract_number
 
 _MAGNET = re.compile(r"magnet:\?xt=urn:btih:[0-9A-Za-z]{32,40}[^\s\"'<>]*")
+_CST = timezone(timedelta(hours=8))
 _ATOM = "{http://www.w3.org/2005/Atom}"
 
 
@@ -138,6 +141,54 @@ def render_rss(items: list[tuple[Wanted, str]], *, link: str) -> str:
         )
     parts.append("</channel></rss>")
     return "\n".join(parts)
+
+
+def render_resource_rss(items: list[Resource], *, title: str, link: str, thread_url: Callable[[int], str]) -> str:
+    """论坛资源的 RSS.
+
+    标题写「番号 原标题」: Amane 从标题解析番号, 原标题留给人看. ``guid`` 用帖子编号, 同一帖子
+    不会被重复入队; 磁力放在 enclosure 里, 供需要直接下载的订阅端使用.
+    """
+    parts = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<rss version="2.0"><channel>',
+        f"<title>{escape(title)}</title>",
+        f"<link>{escape(link)}</link>",
+        f"<description>{escape(title)}</description>",
+    ]
+    for r in items:
+        heading = f"{r.number} {r.title}" if r.number and not r.title.upper().startswith(r.number) else r.title
+        when = _posted_timestamp(r.posted) or r.crawled_at
+        desc = " · ".join(x for x in (r.forum_name, r.type_name, format_size(r.size) if r.size else "") if x)
+        enclosure = (
+            f'<enclosure url="{escape(r.magnet, {chr(34): "&quot;"})}" type="application/x-bittorrent" length="{r.size or 0}"/>'
+            if r.magnet
+            else ""
+        )
+        parts.append(
+            "<item>"
+            f"<title>{escape(heading)}</title>"
+            f"<link>{escape(thread_url(r.tid))}</link>"
+            f'<guid isPermaLink="false">{escape(r.source)}-{r.tid}</guid>'
+            f"<pubDate>{formatdate(when, usegmt=True)}</pubDate>"
+            f"<description>{escape(desc)}</description>"
+            f"{enclosure}"
+            "</item>"
+        )
+    parts.append("</channel></rss>")
+    return "\n".join(parts)
+
+
+def _posted_timestamp(posted: str | None) -> float | None:
+    """论坛时间是北京时间, 只有日期时按当天零点."""
+    if not posted:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(posted, fmt).replace(tzinfo=_CST).timestamp()
+        except ValueError:
+            continue
+    return None
 
 
 def magnet_hash(magnet: str) -> str | None:

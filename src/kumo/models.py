@@ -145,6 +145,7 @@ class Resource:
     forum_name: str
     type_name: str
     title: str
+    type_id: int | None = None
     number: str | None = None
     magnet: str | None = None
     info_hash: str | None = None

@@ -47,9 +47,10 @@
     <label><span>爬取间隔（分钟）</span><input type="number" step="any" name="crawl_interval_minutes" value="{{ s.crawl_interval_minutes }}"></label>
     <label><span>请求间隔（秒）</span><input type="number" step="any" name="crawl_request_delay" value="{{ s.crawl_request_delay }}"></label>
   </div>
-  <label><span>板块，每行一个：板块编号 | 自动/入库 | 分类(逗号) | 包含词(逗号) | 排除词(逗号)，后几段可省略。
-    常用：103 高清中文字幕，36 亚洲无码原创，37 亚洲有码原创，151 4K原版。「入库」只记录不下载，「自动」会把符合条件的新帖直接提交下载。</span>
-    <textarea name="crawl_forums">{% for f in s.crawl_forums %}{{ f.fid }} | {{ '自动' if f.auto_download else '入库' }}{% if f.types or f.include_keywords or f.exclude_keywords %} | {{ f.types|join(',') }} | {{ f.include_keywords|join(',') }} | {{ f.exclude_keywords|join(',') }}{% endif %}
+  <label><span>爬取目标，每行一个：板块编号[:分类编号] | 自动/入库 | 分类名(逗号) | 包含词(逗号) | 排除词(逗号)，后几段可省略。
+    常用板块：103 高清中文字幕，36 亚洲无码原创，37 亚洲有码原创，151 4K原版；分类如 36:369 只爬 HEYZO，103:480 只爬有码高清。
+    「入库」只记录不下载，「自动」会把符合条件的新帖直接提交下载。</span>
+    <textarea name="crawl_forums">{% for f in s.crawl_forums %}{{ f.fid }}{% if f.typeid %}:{{ f.typeid }}{% endif %} | {{ '自动' if f.auto_download else '入库' }}{% if f.types or f.include_keywords or f.exclude_keywords %} | {{ f.types|join(',') }} | {{ f.include_keywords|join(',') }} | {{ f.exclude_keywords|join(',') }}{% endif %}
 {% endfor %}</textarea></label>
 </div>
 

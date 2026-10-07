@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sqlite3
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
@@ -7,9 +9,10 @@ from fastapi.testclient import TestClient
 
 from conftest import fixture_text
 from kumo import service as service_module
+from kumo.db import Repo
 from kumo.magnets import SiteError
 from kumo.models import Resource, Tag, WantedStatus
-from kumo.sehuatang import Sehuatang, ThreadDetail, ThreadRef, is_age_gate, parse_forum, parse_thread
+from kumo.sehuatang import Sehuatang, ThreadDetail, ThreadRef, forum_path, is_age_gate, parse_forum, parse_thread
 from kumo.service import Service, _accepts
 from kumo.settings import CrawlForum, Env, Settings
 from kumo.web import create_app
@@ -23,9 +26,20 @@ def test_parse_forum_page() -> None:
     assert len(threads) == 30
     oppw = next(t for t in threads if t.tid == 3815699)
     assert oppw.title.startswith("OPPW-160")
-    assert oppw.type_name == "有码高清"
+    assert oppw.type_name == "有码高清" and oppw.type_id == 480
     assert oppw.posted == "2026-10-07"
     assert len({t.tid for t in threads}) == 30
+
+
+@pytest.mark.parametrize(
+    ("fid", "page", "typeid", "expected"),
+    [
+        (103, 1, None, "forum.php?mod=forumdisplay&fid=103&orderby=dateline&page=1&filter=author"),
+        (36, 2, 369, "forum.php?mod=forumdisplay&fid=36&orderby=dateline&page=2&filter=typeid&typeid=369"),
+    ],
+)
+def test_forum_path_orders_by_post_time(fid: int, page: int, typeid: int | None, expected: str) -> None:
+    assert forum_path(fid, page, typeid) == expected
 
 
 def test_parse_thread_page() -> None:
@@ -94,8 +108,8 @@ class FakeForum:
     def __init__(self, base_url: str) -> None:
         pass
 
-    async def forum_page(self, fetcher: object, fid: int, page: int) -> tuple[str, list[ThreadRef]]:
-        FakeForum.page_calls.append((fid, page))
+    async def forum_page(self, fetcher: object, fid: int, page: int, typeid: int | None = None) -> tuple[str, list[ThreadRef]]:
+        FakeForum.page_calls.append((fid, page) if typeid is None else (fid, page, typeid))
         pages = FakeForum.pages.get(fid, [])
         return ("高清中文字幕" if fid == 103 else "亚洲无码原创"), (pages[page - 1] if page <= len(pages) else [])
 
@@ -106,7 +120,7 @@ class FakeForum:
 
 
 def ref(tid: int, title: str, typ: str = "有码高清") -> ThreadRef:
-    return ThreadRef(tid=tid, title=title, type_name=typ, posted="2026-10-07")
+    return ThreadRef(tid=tid, title=title, type_name=typ, posted="2026-10-07", type_id=480 if typ == "有码高清" else 481)
 
 
 def detail(tid: int, title: str, magnet: bool = True) -> ThreadDetail:
@@ -143,6 +157,7 @@ async def test_crawl_indexes_new_threads_and_stops_at_seen(service: Service, for
     items = {r.tid: r for r in service.repo.resources()}
     assert set(items) == {1, 2, 3}
     assert items[3].number == "MNGS-005" and items[3].subtitle and items[3].info_hash == f"{3:040d}"
+    assert items[3].type_id == 480
     assert items[2].magnet is None
     assert service.repo.list_wanted() == []  # 默认只入库, 不下载
 
@@ -166,6 +181,14 @@ async def test_crawl_skips_failed_thread_and_retries_later(service: Service, for
     forum.failing = set()
     await service.run_crawl()
     assert service.repo.resource_exists("sehuatang", 5)
+
+
+async def test_crawl_target_with_typeid(service: Service, forum: type[FakeForum]) -> None:
+    s = crawl_settings()
+    s.crawl_forums = [CrawlForum(fid=36, typeid=369)]
+    service.repo.save_settings(s)
+    await service.run_crawl()
+    assert forum.page_calls == [(36, 1, 369)]
 
 
 async def test_crawl_disabled_does_nothing(service: Service, forum: type[FakeForum]) -> None:
@@ -264,10 +287,95 @@ def test_resources_page_and_settings(service: Service, tmp_path: Path) -> None:
         assert resp.status_code == 303 and resp.headers["location"].startswith("/wanted/")
         assert c.post("/resources/99999/download").status_code == 400
 
-        form = {"crawl_enabled": "on", "crawl_forums": "103 | 自动 | 有码高清 | | 预告\n36\n", "crawl_pages": "3"}
+        form = {"crawl_enabled": "on", "crawl_forums": "103 | 自动 | 有码高清 | | 预告\n36\n36:369 | 入库\n", "crawl_pages": "3"}
         assert "已保存" in c.post("/settings", data=form).text
         s = service.repo.settings()
         assert s.crawl_enabled and s.crawl_pages == 3
         assert s.crawl_forums[0] == CrawlForum(fid=103, auto_download=True, types=["有码高清"], exclude_keywords=["预告"])
         assert s.crawl_forums[1] == CrawlForum(fid=36)
-        assert "保存失败" in c.post("/settings", data={**form, "crawl_forums": "abc | 自动"}).text
+        assert s.crawl_forums[2] == CrawlForum(fid=36, typeid=369)
+        assert "36:369 | 入库" in c.get("/settings").text
+        for bad in ("abc | 自动", "36:x", "36:"):
+            assert "保存失败" in c.post("/settings", data={**form, "crawl_forums": bad}).text, bad
+
+
+# --- 按参数输出 RSS ---
+
+
+def add_typed(
+    service: Service, tid: int, fid: int, typeid: int | None, title: str, number: str | None,
+    subtitle: bool = False, magnet: bool = True,
+) -> None:
+    service.repo.add_resource(
+        Resource(
+            source="sehuatang", tid=tid, forum_id=fid, forum_name=f"板块{fid}", type_id=typeid, type_name=f"分类{typeid}",
+            title=title, number=number, magnet=f"magnet:?xt=urn:btih:{tid:040d}&dn=a" if magnet else None,
+            info_hash=f"{tid:040d}" if magnet else None, size=2 * 1024**3, posted="2026-10-07 06:04:06", subtitle=subtitle,
+        )
+    )
+
+
+def rss_items(text: str) -> list[ET.Element]:
+    return list(ET.fromstring(text).iter("item"))
+
+
+def test_resource_rss_filters(service: Service, tmp_path: Path) -> None:
+    add_typed(service, 1, 36, 369, "HEYZO-1234 标题", "HEYZO-1234")
+    add_typed(service, 2, 36, 370, "加勒比 123456-789", None)
+    add_typed(service, 3, 103, 480, "OPPW-160 [自提征用]字幕版", "OPPW-160", subtitle=True)
+    add_typed(service, 4, 103, 480, "ABC-004 没磁力", "ABC-004", magnet=False)
+    with TestClient(create_app(Env(data_dir=tmp_path, password=""), service=service)) as c:
+
+        def guids(query: str) -> list[str]:
+            r = c.get(f"/rss/sehuatang.xml{query}")
+            assert r.status_code == 200 and "application/rss+xml" in r.headers["content-type"]
+            return [i.findtext("guid") or "" for i in rss_items(r.text)]
+
+        assert guids("") == ["sehuatang-3", "sehuatang-1"]  # 默认: 有磁力且有番号, 新帖在前
+        assert guids("?numbered=0") == ["sehuatang-3", "sehuatang-2", "sehuatang-1"]
+        assert guids("?fid=36") == ["sehuatang-1"]
+        assert guids("?fid=36,103&typeid=480") == ["sehuatang-3"]
+        assert guids("?subtitle=1") == ["sehuatang-3"]
+        assert guids("?q=HEYZO") == ["sehuatang-1"]
+        assert guids("?limit=1") == ["sehuatang-3"]
+        assert c.get("/rss/sehuatang.xml?fid=abc").status_code == 400
+
+        item = rss_items(c.get("/rss/sehuatang.xml?fid=36").text)[0]
+        assert item.findtext("title") == "HEYZO-1234 标题"
+        assert item.findtext("link") == "https://www.sehuatang.net/thread-1-1-1.html"
+        enclosure = item.find("enclosure")
+        assert enclosure is not None and enclosure.get("url") == f"magnet:?xt=urn:btih:{1:040d}&dn=a"
+        assert item.findtext("pubDate") == "Tue, 06 Oct 2026 22:04:06 GMT"  # 北京时间 06:04 → UTC
+
+        page = c.get("/resources?forum=36&typeid=369").text
+        assert "HEYZO-1234" in page and "加勒比" not in page
+        assert "/rss/sehuatang.xml?fid=36&amp;typeid=369" in page
+
+
+def test_resource_rss_title_gets_number_prefix_when_missing(service: Service, tmp_path: Path) -> None:
+    add_typed(service, 5, 36, 368, "【無】素人 FC2PPV-4988506", "FC2-PPV-4988506")
+    with TestClient(create_app(Env(data_dir=tmp_path, password=""), service=service)) as c:
+        (item,) = rss_items(c.get("/rss/sehuatang.xml").text)
+        assert item.findtext("title") == "FC2-PPV-4988506 【無】素人 FC2PPV-4988506"
+
+
+def test_resource_rss_requires_key_with_password(service: Service, tmp_path: Path) -> None:
+    with TestClient(create_app(Env(data_dir=tmp_path, password="pw"), service=service)) as c:
+        assert c.get("/rss/sehuatang.xml").status_code == 401
+        assert c.get("/rss/sehuatang.xml?fid=36&key=pw").status_code == 200
+
+
+def test_old_database_gets_type_id_column(tmp_path: Path) -> None:
+    db = tmp_path / "old.db"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "CREATE TABLE resource (id INTEGER PRIMARY KEY, source TEXT NOT NULL, tid INTEGER NOT NULL,"
+        " forum_id INTEGER NOT NULL, forum_name TEXT NOT NULL DEFAULT '', type_name TEXT NOT NULL DEFAULT '',"
+        " title TEXT NOT NULL, number TEXT, magnet TEXT, info_hash TEXT, size INTEGER, posted TEXT,"
+        " subtitle INTEGER NOT NULL DEFAULT 0, wanted_id INTEGER, crawled_at REAL NOT NULL, UNIQUE (source, tid))"
+    )
+    conn.execute("INSERT INTO resource(source, tid, forum_id, title, crawled_at) VALUES('sehuatang', 9, 36, 'old', 0)")
+    conn.commit()
+    conn.close()
+    (old,) = Repo(db).resources()
+    assert old.title == "old" and old.type_id is None

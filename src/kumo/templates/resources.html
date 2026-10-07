@@ -4,14 +4,24 @@
 {% if not crawl_enabled %}<div class="alert">论坛爬取未启用，到 <a href="/settings">设置</a> 里打开「启用定时爬取」。</div>{% endif %}
 <div class="card">
   <div class="filters">
-    <a href="/resources" class="{% if forum is none %}on{% endif %}">全部</a>
-    {% for f in forums %}<a href="/resources?forum={{ f.forum_id }}" class="{% if forum == f.forum_id %}on{% endif %}">{{ f.forum_name or f.forum_id }} {{ f.n }}</a>{% endfor %}
+    <a href="/resources" class="{% if not forum %}on{% endif %}">全部板块</a>
+    {% for f in forums %}<a href="/resources?forum={{ f.forum_id }}" class="{% if forum == f.forum_id %}on{% endif %}">{{ f.forum_name or f.forum_id }}（{{ f.forum_id }}）{{ f.n }}</a>{% endfor %}
   </div>
-  <form method="get" action="/resources" style="display:flex;gap:8px;margin-bottom:10px">
-    {% if forum is not none %}<input type="hidden" name="forum" value="{{ forum }}">{% endif %}
-    <input type="text" name="q" value="{{ q }}" placeholder="搜索标题或番号">
-    <button>搜索</button>
+  {% if types %}
+  <div class="filters">
+    <a href="/resources?forum={{ forum }}" class="{% if not typeid %}on{% endif %}">全部分类</a>
+    {% for t in types %}<a href="/resources?forum={{ forum }}&typeid={{ t.type_id }}" class="{% if typeid == t.type_id %}on{% endif %}">{{ t.type_name }}（{{ t.type_id }}）{{ t.n }}</a>{% endfor %}
+  </div>
+  {% endif %}
+  <form method="get" action="/resources" style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:center">
+    {% if forum %}<input type="hidden" name="forum" value="{{ forum }}">{% endif %}
+    {% if typeid %}<input type="hidden" name="typeid" value="{{ typeid }}">{% endif %}
+    <input type="text" name="q" value="{{ q }}" placeholder="搜索标题或番号" style="flex:1;min-width:180px">
+    <label class="check" style="margin:0"><input type="checkbox" name="subtitle" value="1" {% if subtitle == '1' %}checked{% endif %}> 只看字幕</label>
+    <button>筛选</button>
   </form>
+  <p class="muted" style="margin:0 0 10px">当前筛选的 RSS（复制到 Amane「远程发现」订阅）：<br>
+    <code class="break" style="user-select:all">{{ rss_url }}</code></p>
   <div class="scroll"><table>
     <tr><th>番号</th><th>标题</th><th>分类</th><th>大小</th><th>发表</th><th></th></tr>
     {% for r in items %}
@@ -29,7 +39,7 @@
       </td>
     </tr>
     {% else %}
-    <tr><td colspan="6" class="muted">还没有爬到资源</td></tr>
+    <tr><td colspan="6" class="muted">没有符合条件的资源</td></tr>
     {% endfor %}
   </table></div>
   <form class="inline" method="post" action="/run/crawl"><button style="margin-top:10px">立即爬取</button></form>

@@ -19,11 +19,13 @@ class InputFeed(BaseModel):
 
 
 class CrawlForum(BaseModel):
-    """要爬取的论坛板块; 新帖默认只入库, ``auto_download`` 打开后才自动提交下载."""
+    """一个爬取目标: 论坛板块, 可限定分类; 新帖默认只入库, ``auto_download`` 打开后才自动提交下载."""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     fid: int = Field(ge=1)
+    typeid: int | None = Field(default=None, ge=1)
+    """板块内的分类 (Discuz ``typeid``); 为空爬整个板块."""
     auto_download: bool = False
     types: list[str] = Field(default_factory=list)
     """只自动下载这些分类 (如「有码高清」); 为空不限."""
