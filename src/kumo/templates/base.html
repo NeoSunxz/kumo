@@ -53,6 +53,7 @@ label > span { display: block; color: var(--muted); font-size: 13px; margin-bott
 .check { display: flex; gap: 6px; align-items: center; }
 .alert { padding: 8px 12px; border-radius: 6px; border: 1px solid var(--warn); color: var(--warn); margin-bottom: 12px; }
 .ok { color: var(--ok); }
+.ok-alert { border-color: var(--accent); color: var(--accent); }
 .break { word-break: break-all; }
 /* 女优墙与封面墙 */
 .wall { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
@@ -99,7 +100,9 @@ label > span { display: block; color: var(--muted); font-size: 13px; margin-bott
   <span class="auth">{% if authorized %}<span class="ok">● 115 已授权</span>{% else %}<a href="/auth">○ 115 未授权</a>{% endif %}</span>
 </header>
 <main>
-{% for name, msg in errors.items() %}<div class="alert">{{ name }}: {{ msg }}</div>{% endfor %}
+{% if flash %}<div class="alert ok-alert">{{ flash }}</div>{% endif %}
+{% if running %}<div class="alert ok-alert">正在运行：{{ running|join('、') }} <a href="javascript:location.reload()">刷新</a></div>{% endif %}
+{% for name, msg in errors.items() %}<div class="alert">{{ name }}：{{ msg }}</div>{% endfor %}
 {% block content %}{% endblock %}
 <p class="muted" style="font-size:12px">kumo {{ version }}</p>
 </main>

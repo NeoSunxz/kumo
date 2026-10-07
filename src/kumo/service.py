@@ -48,6 +48,8 @@ class Service:
         self._sync_requested = False
         self._task: asyncio.Task[None] | None = None
         self.last_error: dict[str, str] = {}
+        self.running: dict[str, float] = {}
+        """正在运行的任务与开始时间, 页面据此显示进度."""
 
     # --- 115 客户端 ---
 
@@ -407,11 +409,14 @@ class Service:
                         if added and magnet and w is not None and w.status is WantedStatus.PENDING:
                             self.add_magnet(w.id, magnet, entry.title)
 
-    async def run_crawl(self) -> None:
+    async def run_crawl(self, *, force: bool = False) -> None:
+        """``force``: 网页上手动点「立即爬取」, 不受「启用定时爬取」开关限制 (开关只管定时任务)."""
         async with self._locks["crawl"]:
             s = self.settings
-            if not s.crawl_enabled:
+            if not s.crawl_enabled and not force:
                 return
+            if not s.crawl_forums:
+                raise SiteError("没有配置爬取目标, 请在设置 → 论坛爬取里填写板块")
             site = Sehuatang(s.crawl_base_url)
             fetcher = Fetcher(proxy=s.scrape_proxy, flaresolverr_url=s.flaresolverr_url)
             new_total = queued = 0
@@ -489,6 +494,7 @@ class Service:
             await self.run_guarded(name, job)
 
     async def run_guarded(self, name: str, job: Callable[[], object]) -> None:
+        self.running[name] = time.time()
         try:
             await job()  # type: ignore[misc]
             if name != "submit":
@@ -502,6 +508,8 @@ class Service:
             log.exception("job %s failed", name)
             self.last_error[name] = f"{type(exc).__name__}: {exc}"
             self.repo.log("error", f"{name}: {type(exc).__name__}: {exc}")
+        finally:
+            self.running.pop(name, None)
 
     async def _loop(self) -> None:
         while True:

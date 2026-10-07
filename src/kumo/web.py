@@ -33,6 +33,11 @@ from .subscriptions import KIND_LABELS, SOURCE_LABELS
 from .service import Service
 from .settings import CrawlForum, Env, InputFeed, Settings
 
+JOB_LABELS = {
+    "search": "搜索磁力", "submit": "提交云下载", "tasks": "刷新下载进度", "sync": "同步 115 目录",
+    "feeds": "读取 RSS", "crawl": "论坛爬取", "subs": "检查订阅",
+}
+
 #: 搜索番号时可选的磁力来源; sehuatang 查的是本地已爬取的资源库.
 SEARCH_SOURCES = [*SITES, "sehuatang"]
 
@@ -87,7 +92,9 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
         s: Service = svc(request)
         client = s.client()
         ctx.setdefault("authorized", bool(client and client.authorized()))
-        ctx.setdefault("errors", s.last_error)
+        ctx.setdefault("errors", {JOB_LABELS.get(k, k): v for k, v in s.last_error.items()})
+        ctx.setdefault("running", [JOB_LABELS.get(k, k) for k in s.running])
+        ctx.setdefault("flash", request.query_params.get("flash", ""))
         return _TEMPLATES.TemplateResponse(request, name, ctx)
 
     def back(url: str) -> RedirectResponse:
@@ -484,12 +491,19 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
         s = svc(request)
         jobs = {
             "search": s.run_search, "submit": s.run_submit, "tasks": s.run_tasks, "sync": s.run_sync,
-            "feeds": s.run_feeds, "crawl": s.run_crawl, "subs": lambda: s.run_subscriptions(force=True),
+            "feeds": s.run_feeds, "crawl": lambda: s.run_crawl(force=True), "subs": lambda: s.run_subscriptions(force=True),
         }
         if job not in jobs:
             raise HTTPException(404)
-        asyncio.create_task(s.run_guarded(job, jobs[job]))
-        return back(request.headers.get("referer") or "/")
+        if job in s.running:
+            flash = f"{JOB_LABELS[job]}已经在运行"
+        else:
+            asyncio.create_task(s.run_guarded(job, jobs[job]))
+            flash = f"已开始{JOB_LABELS[job]}, 在后台运行, 稍后刷新页面查看结果"
+        referer = urlsplit(request.headers.get("referer") or "/")
+        path = referer.path if referer.path.startswith("/") else "/"
+        query = [(k, v) for k, v in parse_qsl(referer.query) if k != "flash"] + [("flash", flash)]
+        return back(f"{path}?{urlencode(query)}")
 
     @app.get("/events", response_class=HTMLResponse)
     async def events(request: Request) -> HTMLResponse:

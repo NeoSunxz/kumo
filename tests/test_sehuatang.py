@@ -379,3 +379,39 @@ def test_old_database_gets_type_id_column(tmp_path: Path) -> None:
     conn.close()
     (old,) = Repo(db).resources()
     assert old.title == "old" and old.type_id is None
+
+
+# --- 手动「立即爬取」 ---
+
+
+async def test_manual_crawl_runs_even_when_schedule_disabled(service: Service, forum: type[FakeForum]) -> None:
+    s = crawl_settings()
+    s.crawl_enabled = False
+    service.repo.save_settings(s)
+    forum.pages[103] = [[ref(60, "ABC-060")]]
+    forum.details[60] = detail(60, "ABC-060")
+    await service.run_crawl()  # 定时任务: 未启用, 不爬
+    assert forum.page_calls == []
+    await service.run_crawl(force=True)  # 网页上手动点: 照样爬
+    assert service.repo.resource_exists("sehuatang", 60)
+
+
+async def test_crawl_without_targets_reports_error(service: Service, forum: type[FakeForum]) -> None:
+    service.repo.save_settings(Settings(crawl_enabled=True, crawl_forums=[]))
+    await service.run_guarded("crawl", lambda: service.run_crawl(force=True))
+    assert "没有配置爬取目标" in service.last_error["crawl"]
+    assert service.running == {}
+
+
+def test_run_button_gives_feedback(service: Service, tmp_path: Path) -> None:
+    with TestClient(create_app(Env(data_dir=tmp_path, password=""), service=service)) as c:
+        r = c.post("/run/crawl", headers={"referer": "http://testserver/resources?forum=36&flash=old"}, follow_redirects=False)
+        location = r.headers["location"]
+        assert location.startswith("/resources?forum=36&flash=") and location.count("flash=") == 1
+        assert "已开始论坛爬取" in c.get(location).text
+
+        service.running["crawl"] = 0.0  # 模拟正在运行
+        r = c.post("/run/crawl", headers={"referer": "http://testserver/resources"}, follow_redirects=False)
+        page = c.get(r.headers["location"]).text
+        assert "论坛爬取已经在运行" in page and "正在运行：论坛爬取" in page
+        assert c.post("/run/bogus").status_code == 404
