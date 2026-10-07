@@ -135,6 +135,33 @@ class LibraryFile:
         return cls(**data)
 
 
+@dataclass
+class Resource:
+    """论坛爬到的一个帖子 (一条可下载的资源)."""
+
+    source: str
+    tid: int
+    forum_id: int
+    forum_name: str
+    type_name: str
+    title: str
+    number: str | None = None
+    magnet: str | None = None
+    info_hash: str | None = None
+    size: int | None = None
+    posted: str | None = None
+    subtitle: bool = False
+    wanted_id: int | None = None
+    crawled_at: float = 0.0
+    id: int | None = None
+
+    @classmethod
+    def from_row(cls, row: sqlite3.Row) -> Resource:
+        data = dict(row)
+        data["subtitle"] = bool(data["subtitle"])
+        return cls(**data)
+
+
 def format_size(size: int | None) -> str:
     if not size:
         return "-"

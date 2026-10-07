@@ -18,11 +18,12 @@ import httpx
 from .db import Repo
 from .feeds import parse_feed, torrent_to_magnet
 from .magnets import SITES, Fetcher, SiteError
-from .models import Candidate, LibraryFile, Wanted, WantedStatus, info_hash_of
+from .models import Candidate, LibraryFile, Resource, Tag, Wanted, WantedStatus, info_hash_of
 from .numbers import extract_number, has_subtitle_suffix
 from .pan115 import FakePan115, NotAuthorized, OpenClient, Pan115, Pan115Error
+from .sehuatang import Sehuatang
 from .select import choose, evaluate, merge
-from .settings import Settings
+from .settings import CrawlForum, Settings
 
 log = logging.getLogger("kumo")
 
@@ -38,7 +39,7 @@ class Service:
         self._client: Pan115 | None = None
         self._client_app_id: str | None = None
         self._folder_ids: dict[str, str] = {}
-        self._locks = {name: asyncio.Lock() for name in ("search", "submit", "tasks", "sync", "feeds")}
+        self._locks = {name: asyncio.Lock() for name in ("search", "submit", "tasks", "sync", "feeds", "crawl")}
         self._last_run: dict[str, float] = {}
         self._sync_requested = False
         self._task: asyncio.Task[None] | None = None
@@ -100,6 +101,8 @@ class Service:
                     errors.append(f"{site}: {exc}")
         finally:
             await fetcher.aclose()
+        if "sehuatang" in s.sites:
+            found += [_resource_candidate(r) for r in self.repo.resources_by_number(wanted.number)]
         candidates = merge(found)
         chosen = choose(candidates, wanted.number, s)
         self.repo.replace_candidates(wanted.id, candidates)
@@ -132,6 +135,24 @@ class Service:
         existing = [c for c in self.repo.candidates(wanted_id) if c.info_hash != info_hash]
         stored = self.repo.replace_candidates(wanted_id, [cand, *existing])
         self.repo.update_wanted(wanted_id, status=WantedStatus.QUEUED, chosen_id=stored[0].id, note="手动指定磁力")
+
+    def download_resource(self, resource_id: int) -> int:
+        """把爬到的资源转成待下载的番号; 返回番号记录的 id.
+
+        番号已在列表里时: 还没选定磁力的直接用这条资源, 已在下载流程中的只做关联, 不改动.
+        """
+        r = self.repo.resource(resource_id)
+        if r is None:
+            raise ValueError("资源不存在")
+        if not r.magnet or not r.number:
+            raise ValueError("该帖子没有磁力链接或识别不出番号")
+        self.add_numbers([r.number], source=f"{r.source}:{r.forum_id}")
+        w = self.repo.wanted_by_number(r.number)
+        assert w is not None
+        if w.status in (WantedStatus.PENDING, WantedStatus.NO_MAGNET, WantedStatus.NEED_CHOICE):
+            self.add_magnet(w.id, r.magnet, r.title)
+        self.repo.link_resource(resource_id, w.id)
+        return w.id
 
     # --- 定时任务 ---
 
@@ -259,6 +280,52 @@ class Service:
                         if added and magnet and w is not None and w.status is WantedStatus.PENDING:
                             self.add_magnet(w.id, magnet, entry.title)
 
+    async def run_crawl(self) -> None:
+        async with self._locks["crawl"]:
+            s = self.settings
+            if not s.crawl_enabled:
+                return
+            site = Sehuatang(s.crawl_base_url)
+            fetcher = Fetcher(proxy=s.scrape_proxy, flaresolverr_url=s.flaresolverr_url)
+            new_total = queued = 0
+            try:
+                for forum in s.crawl_forums:
+                    for page in range(1, s.crawl_pages + 1):
+                        forum_name, refs = await site.forum_page(fetcher, forum.fid, page)
+                        fresh = [r for r in refs if not self.repo.resource_exists("sehuatang", r.tid)]
+                        for ref in fresh:
+                            await asyncio.sleep(s.crawl_request_delay)
+                            try:
+                                detail = await site.thread(fetcher, ref.tid)
+                            except SiteError as exc:
+                                # 不入库, 下一轮再试.
+                                self.repo.log("warning", f"sehuatang 帖子 {ref.tid} 读取失败: {exc}")
+                                continue
+                            title = detail.title or ref.title
+                            number = extract_number(title)
+                            res = self.repo.add_resource(
+                                Resource(
+                                    source="sehuatang", tid=ref.tid, forum_id=forum.fid, forum_name=forum_name,
+                                    type_name=ref.type_name, title=title, number=number, magnet=detail.magnet,
+                                    info_hash=info_hash_of(detail.magnet) if detail.magnet else None,
+                                    size=detail.size, posted=detail.posted or ref.posted,
+                                    subtitle="字幕" in forum_name or "中文字幕" in title
+                                    or bool(number and has_subtitle_suffix(title, number)),
+                                )
+                            )
+                            new_total += 1
+                            if forum.auto_download and _accepts(forum, res) and res.magnet and res.number and res.id:
+                                self.download_resource(res.id)
+                                queued += 1
+                        # 这一页里出现了已爬过的帖子, 更早的页不用再翻.
+                        if len(fresh) < len(refs) or not refs:
+                            break
+                        await asyncio.sleep(s.crawl_request_delay)
+            finally:
+                await fetcher.aclose()
+                if new_total:
+                    self.repo.log("info", f"sehuatang 爬取: 新帖 {new_total} 个, 自动下载 {queued} 个")
+
     # --- 调度循环 ---
 
     def start(self) -> None:
@@ -279,6 +346,7 @@ class Service:
         s = self.settings
         jobs: list[tuple[str, float, Callable[[], object]]] = [
             ("feeds", s.feed_interval_minutes * 60, self.run_feeds),
+            ("crawl", s.crawl_interval_minutes * 60, self.run_crawl),
             ("search", 0, self.run_search),
             ("submit", 0, self.run_submit),
             ("tasks", s.task_poll_minutes * 60, self.run_tasks),
@@ -309,6 +377,24 @@ class Service:
         while True:
             await self.tick()
             await asyncio.sleep(_TICK)
+
+
+def _resource_candidate(r: Resource) -> Candidate:
+    assert r.magnet and r.info_hash
+    return Candidate(
+        site=r.source, title=r.title, magnet=r.magnet, info_hash=r.info_hash, size=r.size, published=r.posted,
+        tags={Tag.SUBTITLE} if r.subtitle else set(),
+    )
+
+
+def _accepts(forum: CrawlForum, r: Resource) -> bool:
+    """板块的自动下载过滤: 分类、包含词、排除词."""
+    if forum.types and r.type_name not in forum.types:
+        return False
+    lowered = r.title.lower()
+    if forum.include_keywords and not any(k.lower() in lowered for k in forum.include_keywords):
+        return False
+    return not any(k.lower() in lowered for k in forum.exclude_keywords)
 
 
 def _already_exists(message: str) -> bool:

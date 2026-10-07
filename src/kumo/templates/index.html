@@ -41,7 +41,7 @@
 
 <div class="card">
   <h2>立即执行</h2>
-  {% for job, label in [("search","搜索磁力"),("submit","提交云下载"),("tasks","刷新下载进度"),("sync","同步 115 目录"),("feeds","读取 RSS")] %}
+  {% for job, label in [("search","搜索磁力"),("submit","提交云下载"),("tasks","刷新下载进度"),("sync","同步 115 目录"),("feeds","读取 RSS"),("crawl","爬取论坛")] %}
   <form class="inline" method="post" action="/run/{{ job }}"><button>{{ label }}</button></form>
   {% endfor %}
 </div>

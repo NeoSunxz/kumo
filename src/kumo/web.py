@@ -26,7 +26,10 @@ from .models import STATUS_LABELS, TAG_LABELS, WantedStatus, format_size
 from .numbers import parse_input
 from .pan115 import DeviceAuth, Pan115Error
 from .service import Service
-from .settings import Env, InputFeed, Settings
+from .settings import CrawlForum, Env, InputFeed, Settings
+
+#: 搜索番号时可选的磁力来源; sehuatang 查的是本地已爬取的资源库.
+SEARCH_SOURCES = [*SITES, "sehuatang"]
 
 _TEMPLATES = Jinja2Templates(directory=Path(__file__).parent / "templates")
 _TEMPLATES.env.filters["size"] = format_size
@@ -151,7 +154,7 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
 
     @app.get("/settings", response_class=HTMLResponse)
     async def settings_page(request: Request) -> HTMLResponse:
-        return page(request, "settings.html", s=svc(request).settings, sites=list(SITES), message="")
+        return page(request, "settings.html", s=svc(request).settings, sites=SEARCH_SOURCES, message="")
 
     @app.post("/settings", response_class=HTMLResponse)
     async def save_settings(request: Request) -> Response:
@@ -172,13 +175,30 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
                     exclude_keywords=[k.strip() for k in exclude.split(",") if k.strip()],
                 )
             )
+        def keywords(text: str) -> list[str]:
+            return [k.strip() for k in text.split(",") if k.strip()]
+
         try:
+            forums = []
+            for line in lines("crawl_forums"):
+                parts = [p.strip() for p in line.split("|")] + [""] * 5
+                if not parts[0].isdigit():
+                    raise ValueError(f"板块编号必须是数字: {line}")
+                forums.append(
+                    CrawlForum(
+                        fid=int(parts[0]),
+                        auto_download=parts[1] in ("自动", "是", "auto", "yes", "1"),
+                        types=keywords(parts[2]),
+                        include_keywords=keywords(parts[3]),
+                        exclude_keywords=keywords(parts[4]),
+                    )
+                )
             settings = Settings(
                 app_id=data.get("app_id", ""),
                 download_path=data.get("download_path", ""),
                 sync_paths=lines("sync_paths"),
                 sync_interval_hours=float(data.get("sync_interval_hours") or 6),
-                sites=[name for name in SITES if data.get(f"site_{name}")],
+                sites=[name for name in SEARCH_SOURCES if data.get(f"site_{name}")],
                 scrape_proxy=data.get("scrape_proxy", ""),
                 flaresolverr_url=data.get("flaresolverr_url", ""),
                 no_magnet_retry_hours=float(data.get("no_magnet_retry_hours") or 24),
@@ -193,11 +213,17 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
                 task_poll_minutes=float(data.get("task_poll_minutes") or 5),
                 input_feeds=feeds,
                 feed_interval_minutes=float(data.get("feed_interval_minutes") or 30),
+                crawl_enabled="crawl_enabled" in data,
+                crawl_base_url=data.get("crawl_base_url") or "https://www.sehuatang.net",
+                crawl_forums=forums,
+                crawl_pages=int(data.get("crawl_pages") or 2),
+                crawl_interval_minutes=float(data.get("crawl_interval_minutes") or 60),
+                crawl_request_delay=float(data.get("crawl_request_delay") or 1.5),
             )
         except (ValidationError, ValueError) as exc:
-            return page(request, "settings.html", s=svc(request).settings, sites=list(SITES), message=f"保存失败: {exc}")
+            return page(request, "settings.html", s=svc(request).settings, sites=SEARCH_SOURCES, message=f"保存失败: {exc}")
         svc(request).repo.save_settings(settings)
-        return page(request, "settings.html", s=settings, sites=list(SITES), message="已保存")
+        return page(request, "settings.html", s=settings, sites=SEARCH_SOURCES, message="已保存")
 
     # --- 115 授权 ---
 
@@ -257,12 +283,39 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
         repo = svc(request).repo
         return page(request, "library.html", stats=repo.library_stats(), files=repo.search_library(q.strip()) if q.strip() else [], q=q)
 
+    # --- 论坛爬取的资源 ---
+
+    @app.get("/resources", response_class=HTMLResponse)
+    async def resources(request: Request, q: str = "", forum: int | None = None) -> HTMLResponse:
+        repo = svc(request).repo
+        return page(
+            request,
+            "resources.html",
+            items=repo.resources(search=q.strip(), forum_id=forum),
+            forums=repo.resource_forums(),
+            q=q,
+            forum=forum,
+            crawl_enabled=svc(request).settings.crawl_enabled,
+        )
+
+    @app.post("/resources/{resource_id}/download")
+    async def download_resource(request: Request, resource_id: int) -> RedirectResponse:
+        try:
+            wanted_id = svc(request).download_resource(resource_id)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        asyncio.create_task(svc(request).run_guarded("submit", svc(request).run_submit))
+        return back(f"/wanted/{wanted_id}")
+
     # --- 手动触发与日志 ---
 
     @app.post("/run/{job}")
     async def run_job(request: Request, job: str) -> RedirectResponse:
         s = svc(request)
-        jobs = {"search": s.run_search, "submit": s.run_submit, "tasks": s.run_tasks, "sync": s.run_sync, "feeds": s.run_feeds}
+        jobs = {
+            "search": s.run_search, "submit": s.run_submit, "tasks": s.run_tasks, "sync": s.run_sync,
+            "feeds": s.run_feeds, "crawl": s.run_crawl,
+        }
         if job not in jobs:
             raise HTTPException(404)
         asyncio.create_task(s.run_guarded(job, jobs[job]))

@@ -18,6 +18,19 @@ class InputFeed(BaseModel):
     exclude_keywords: list[str] = Field(default_factory=list)
 
 
+class CrawlForum(BaseModel):
+    """要爬取的论坛板块; 新帖默认只入库, ``auto_download`` 打开后才自动提交下载."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    fid: int = Field(ge=1)
+    auto_download: bool = False
+    types: list[str] = Field(default_factory=list)
+    """只自动下载这些分类 (如「有码高清」); 为空不限."""
+    include_keywords: list[str] = Field(default_factory=list)
+    exclude_keywords: list[str] = Field(default_factory=list)
+
+
 class Settings(BaseModel):
     model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
 
@@ -29,8 +42,8 @@ class Settings(BaseModel):
     """用于判断「已拥有」的 115 目录."""
     sync_interval_hours: float = Field(default=6.0, ge=0.5)
 
-    # 磁力刮削
-    sites: list[str] = Field(default_factory=lambda: ["sukebei", "javbus"])
+    # 磁力刮削; sehuatang 指本地已爬取的资源库, 不发网络请求
+    sites: list[str] = Field(default_factory=lambda: ["sukebei", "javbus", "sehuatang"])
     scrape_proxy: str = ""
     """刮削磁力站点用的代理, 如 ``http://user:pass@host:port``; 为空则直连."""
     flaresolverr_url: str = ""
@@ -50,6 +63,17 @@ class Settings(BaseModel):
     submit_batch: int = Field(default=5, ge=1, le=50)
     """每轮最多提交的任务数."""
     task_poll_minutes: float = Field(default=5.0, ge=1)
+
+    # 论坛爬取 (sehuatang)
+    crawl_enabled: bool = False
+    crawl_base_url: str = "https://www.sehuatang.net"
+    """站点常换域名, 换了在这里改."""
+    crawl_forums: list[CrawlForum] = Field(default_factory=lambda: [CrawlForum(fid=103), CrawlForum(fid=36)])
+    crawl_pages: int = Field(default=2, ge=1, le=20)
+    """每轮每个板块最多翻几页; 遇到已爬过的帖子即停止翻页."""
+    crawl_interval_minutes: float = Field(default=60.0, ge=10)
+    crawl_request_delay: float = Field(default=1.5, ge=0.5, le=30)
+    """相邻两次请求的间隔 (秒)."""
 
     # 输入 / 输出 RSS
     input_feeds: list[InputFeed] = Field(default_factory=list)

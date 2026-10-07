@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from .models import Candidate, LibraryFile, Wanted, WantedStatus
+from .models import Candidate, LibraryFile, Resource, Wanted, WantedStatus
 from .settings import Settings
 
 _SCHEMA = """
@@ -70,6 +70,25 @@ CREATE TABLE IF NOT EXISTS feed_seen (
     seen_at   REAL NOT NULL,
     PRIMARY KEY (feed_url, item_key)
 );
+CREATE TABLE IF NOT EXISTS resource (
+    id          INTEGER PRIMARY KEY,
+    source      TEXT NOT NULL,
+    tid         INTEGER NOT NULL,
+    forum_id    INTEGER NOT NULL,
+    forum_name  TEXT NOT NULL DEFAULT '',
+    type_name   TEXT NOT NULL DEFAULT '',
+    title       TEXT NOT NULL,
+    number      TEXT COLLATE NOCASE,
+    magnet      TEXT,
+    info_hash   TEXT,
+    size        INTEGER,
+    posted      TEXT,
+    subtitle    INTEGER NOT NULL DEFAULT 0,
+    wanted_id   INTEGER REFERENCES wanted(id) ON DELETE SET NULL,
+    crawled_at  REAL NOT NULL,
+    UNIQUE (source, tid)
+);
+CREATE INDEX IF NOT EXISTS ix_resource_number ON resource(number);
 CREATE TABLE IF NOT EXISTS event (
     id       INTEGER PRIMARY KEY,
     at       REAL NOT NULL,
@@ -278,3 +297,50 @@ class Repo:
                 (feed_url, item_key, time.time()),
             )
             return cur.rowcount == 1
+
+    # --- 论坛爬取的资源 ---
+
+    def resource_exists(self, source: str, tid: int) -> bool:
+        return self._one("SELECT 1 FROM resource WHERE source = ? AND tid = ?", (source, tid)) is not None
+
+    def add_resource(self, r: Resource) -> Resource:
+        with self._tx() as c:
+            c.execute(
+                "INSERT OR IGNORE INTO resource(source, tid, forum_id, forum_name, type_name, title, number, magnet,"
+                " info_hash, size, posted, subtitle, crawled_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    r.source, r.tid, r.forum_id, r.forum_name, r.type_name, r.title, r.number, r.magnet,
+                    r.info_hash, r.size, r.posted, int(r.subtitle), time.time(),
+                ),
+            )
+            row = c.execute("SELECT * FROM resource WHERE source = ? AND tid = ?", (r.source, r.tid)).fetchone()
+        return Resource.from_row(row)
+
+    def resource(self, resource_id: int) -> Resource | None:
+        row = self._one("SELECT * FROM resource WHERE id = ?", (resource_id,))
+        return Resource.from_row(row) if row else None
+
+    def resources(self, *, search: str = "", forum_id: int | None = None, limit: int = 200) -> list[Resource]:
+        sql, params = "SELECT * FROM resource WHERE 1=1", []
+        if search:
+            sql += " AND (title LIKE ? OR number LIKE ?)"
+            params += [f"%{search}%", f"%{search}%"]
+        if forum_id is not None:
+            sql += " AND forum_id = ?"
+            params.append(forum_id)
+        sql += " ORDER BY tid DESC LIMIT ?"
+        params.append(limit)
+        return [Resource.from_row(r) for r in self._all(sql, params)]
+
+    def resources_by_number(self, number: str) -> list[Resource]:
+        rows = self._all("SELECT * FROM resource WHERE number = ? AND magnet IS NOT NULL", (number,))
+        return [Resource.from_row(r) for r in rows]
+
+    def resource_forums(self) -> list[sqlite3.Row]:
+        return self._all(
+            "SELECT forum_id, forum_name, COUNT(*) AS n FROM resource GROUP BY forum_id, forum_name ORDER BY forum_id"
+        )
+
+    def link_resource(self, resource_id: int, wanted_id: int) -> None:
+        with self._tx() as c:
+            c.execute("UPDATE resource SET wanted_id = ? WHERE id = ?", (wanted_id, resource_id))

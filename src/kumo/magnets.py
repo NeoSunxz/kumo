@@ -41,6 +41,9 @@ class Fetcher:
     async def aclose(self) -> None:
         await self._client.aclose()
 
+    def set_cookie(self, name: str, value: str, domain: str) -> None:
+        self._client.cookies.set(name, value, domain=domain)
+
     async def get_text(self, url: str, *, headers: dict[str, str] | None = None) -> tuple[int, str]:
         try:
             resp = await self._client.get(url, headers=headers)
