@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}订阅 - kumo{% endblock %}
+{% block content %}
+{% if message %}<div class="alert">{{ message }}</div>{% endif %}
+<div class="card">
+  <h2>添加订阅</h2>
+  <form method="post" action="/subscriptions" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+    <input type="text" name="url" placeholder="粘贴 JavBus 的女优 / 系列 / 片商 / 发行商 / 导演 / 类别页面地址，如 https://www.javbus.com/star/1248" style="flex:1;min-width:260px">
+    <label class="check" style="margin:0"><input type="checkbox" name="auto_search" value="1"> 新作自动搜磁力</label>
+    <button class="primary">添加</button>
+  </form>
+  <p class="muted" style="margin:8px 0 0">无码作品用 /uncensored/ 开头的地址。添加后会立即回填最近几页作品，之后按设置的间隔检查更新。
+    新作默认只进「新作」列表，在那里勾选后再搜磁力；勾了「新作自动搜磁力」的订阅会把新作直接加入下载队列。</p>
+</div>
+
+<div class="card">
+  <div class="scroll"><table>
+    <tr><th>名称</th><th>类型</th><th>作品</th><th>上次检查</th><th>自动搜磁力</th><th>RSS</th><th></th></tr>
+    {% for sub in subs %}
+    <tr{% if not sub.enabled %} class="muted"{% endif %}>
+      <td><a href="/releases?sub={{ sub.id }}">{{ sub.name }}</a>
+        {% if sub.last_error %}<br><span style="color:var(--bad)">{{ sub.last_error }}</span>{% endif %}</td>
+      <td>{{ ('无码' if sub.uncensored else '') ~ KIND_LABELS.get(sub.kind, sub.kind) }}</td>
+      <td>{{ sub.release_count }}</td>
+      <td class="muted" style="white-space:nowrap">{{ sub.checked_at|ts }}</td>
+      <td><form method="post" action="/subscriptions/{{ sub.id }}/auto"><button>{{ '开' if sub.auto_search else '关' }}</button></form></td>
+      <td><code class="break" style="user-select:all;font-size:12px">{{ base }}rss/releases.xml?sub={{ sub.id }}</code></td>
+      <td style="white-space:nowrap">
+        <form class="inline" method="post" action="/subscriptions/{{ sub.id }}/check"><button>检查</button></form>
+        <form class="inline" method="post" action="/subscriptions/{{ sub.id }}/toggle"><button>{{ '停用' if sub.enabled else '启用' }}</button></form>
+        <form class="inline" method="post" action="/subscriptions/{{ sub.id }}/delete"><button class="danger">删除</button></form>
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="7" class="muted">还没有订阅</td></tr>
+    {% endfor %}
+  </table></div>
+  <form class="inline" method="post" action="/run/subs"><button style="margin-top:10px">全部立即检查</button></form>
+</div>
+{% endblock %}

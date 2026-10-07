@@ -77,6 +77,13 @@ class Settings(BaseModel):
     crawl_request_delay: float = Field(default=1.5, ge=0.5, le=30)
     """相邻两次请求的间隔 (秒)."""
 
+    # 订阅 (按女优 / 系列 / 片商等获取新作)
+    subs_interval_hours: float = Field(default=12.0, ge=1)
+    subs_pages: int = Field(default=1, ge=1, le=10)
+    """之后每次检查最多翻几页; 遇到已见过的作品即停止."""
+    subs_initial_pages: int = Field(default=3, ge=1, le=30)
+    """新订阅第一次检查时回填的页数 (每页 30 部)."""
+
     # 输入 / 输出 RSS
     input_feeds: list[InputFeed] = Field(default_factory=list)
     feed_interval_minutes: float = Field(default=30.0, ge=5)

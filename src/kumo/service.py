@@ -18,10 +18,11 @@ import httpx
 from .db import Repo
 from .feeds import parse_feed, torrent_to_magnet
 from .magnets import SITES, Fetcher, SiteError
-from .models import Candidate, LibraryFile, Resource, Tag, Wanted, WantedStatus, info_hash_of
+from .models import Candidate, LibraryFile, Release, Resource, Subscription, Tag, Wanted, WantedStatus, info_hash_of
 from .numbers import extract_number, has_subtitle_suffix
 from .pan115 import FakePan115, NotAuthorized, OpenClient, Pan115, Pan115Error
 from .sehuatang import Sehuatang
+from .subscriptions import SubscriptionKey, fetch_list, parse_subscription_url
 from .select import choose, evaluate, merge
 from .settings import CrawlForum, Settings
 
@@ -39,7 +40,7 @@ class Service:
         self._client: Pan115 | None = None
         self._client_app_id: str | None = None
         self._folder_ids: dict[str, str] = {}
-        self._locks = {name: asyncio.Lock() for name in ("search", "submit", "tasks", "sync", "feeds", "crawl")}
+        self._locks = {name: asyncio.Lock() for name in ("search", "submit", "tasks", "sync", "feeds", "crawl", "subs")}
         self._last_run: dict[str, float] = {}
         self._sync_requested = False
         self._task: asyncio.Task[None] | None = None
@@ -153,6 +154,86 @@ class Service:
             self.add_magnet(w.id, r.magnet, r.title)
         self.repo.link_resource(resource_id, w.id)
         return w.id
+
+    # --- 订阅 ---
+
+    def _fetcher(self) -> Fetcher:
+        s = self.settings
+        return Fetcher(proxy=s.scrape_proxy, flaresolverr_url=s.flaresolverr_url)
+
+    async def add_subscription(self, url: str, *, auto_search: bool = False) -> Subscription:
+        """按页面地址新增订阅: 先取第一页拿到名称 (同时验证地址可用), 再回填作品."""
+        key = parse_subscription_url(url)
+        fetcher = self._fetcher()
+        try:
+            name, _, _ = await fetch_list(fetcher, key)
+        finally:
+            await fetcher.aclose()
+        sub = self.repo.add_subscription(
+            Subscription(
+                source="javbus", kind=key.kind, ident=key.ident, uncensored=key.uncensored,
+                name=name or key.ident, auto_search=auto_search,
+            )
+        )
+        self.repo.log("info", f"新增订阅: {key.label} {sub.name}")
+        return sub
+
+    async def check_subscription(self, sub: Subscription) -> int:
+        """拉取订阅的作品列表, 返回新见到的作品数."""
+        assert sub.id is not None
+        s = self.settings
+        key = SubscriptionKey(kind=sub.kind, ident=sub.ident, uncensored=sub.uncensored)
+        known = self.repo.known_release_numbers(sub.id)
+        pages = s.subs_pages if known else s.subs_initial_pages
+        fresh: list[Release] = []
+        fetcher = self._fetcher()
+        try:
+            for page in range(1, pages + 1):
+                if page > 1:
+                    await asyncio.sleep(s.crawl_request_delay)
+                _, listed, more = await fetch_list(fetcher, key, page)
+                seen_any = False
+                for item in listed:
+                    rel, new = self.repo.add_release(
+                        Release(source="javbus", number=item.number, title=item.title, date=item.date,
+                                cover=item.cover, url=item.url),
+                        sub.id,
+                    )
+                    seen_any |= item.number in known
+                    if new and item.number not in known:
+                        fresh.append(rel)
+                if seen_any or not more:
+                    break
+        except SiteError as exc:
+            self.repo.update_subscription(sub.id, last_error=str(exc), checked_at=time.time())
+            raise
+        finally:
+            await fetcher.aclose()
+        self.repo.update_subscription(sub.id, last_error="", checked_at=time.time())
+        if sub.auto_search and fresh:
+            self.add_numbers([r.number for r in fresh], source=f"订阅:{sub.name}")
+        if fresh:
+            self.repo.log("info", f"订阅 {sub.name}: 新作 {len(fresh)} 部")
+        return len(fresh)
+
+    async def run_subscriptions(self, *, force: bool = False) -> None:
+        async with self._locks["subs"]:
+            s = self.settings
+            due_before = time.time() - s.subs_interval_hours * 3600
+            for sub in self.repo.subscriptions(enabled_only=True):
+                if not force and sub.checked_at and sub.checked_at > due_before:
+                    continue
+                try:
+                    await self.check_subscription(sub)
+                except SiteError as exc:
+                    self.repo.log("warning", f"订阅 {sub.name} 检查失败: {exc}")
+                await asyncio.sleep(s.crawl_request_delay)
+
+    def queue_releases(self, release_ids: list[int]) -> int:
+        """把选中的新作加入下载队列 (去搜磁力); 返回实际新加入的数量."""
+        numbers = [r.number for r in (self.repo.release(i) for i in release_ids) if r is not None]
+        added, _ = self.add_numbers(numbers, source="新作")
+        return added
 
     # --- 定时任务 ---
 
@@ -348,6 +429,8 @@ class Service:
         jobs: list[tuple[str, float, Callable[[], object]]] = [
             ("feeds", s.feed_interval_minutes * 60, self.run_feeds),
             ("crawl", s.crawl_interval_minutes * 60, self.run_crawl),
+            # 订阅各自记录检查时间, 这里每 10 分钟看一次是否有到期的.
+            ("subs", 600, self.run_subscriptions),
             ("search", 0, self.run_search),
             ("submit", 0, self.run_submit),
             ("tasks", s.task_poll_minutes * 60, self.run_tasks),

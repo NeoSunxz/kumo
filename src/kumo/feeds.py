@@ -19,7 +19,7 @@ from email.utils import formatdate
 from urllib.parse import quote
 from xml.sax.saxutils import escape
 
-from .models import Resource, Wanted, format_size, info_hash_of
+from .models import Release, Resource, Wanted, format_size, info_hash_of
 from .numbers import extract_number
 
 _MAGNET = re.compile(r"magnet:\?xt=urn:btih:[0-9A-Za-z]{32,40}[^\s\"'<>]*")
@@ -173,6 +173,30 @@ def render_resource_rss(items: list[Resource], *, title: str, link: str, thread_
             f"<pubDate>{formatdate(when, usegmt=True)}</pubDate>"
             f"<description>{escape(desc)}</description>"
             f"{enclosure}"
+            "</item>"
+        )
+    parts.append("</channel></rss>")
+    return "\n".join(parts)
+
+
+def render_release_rss(items: list[tuple[Release, str]], *, title: str, link: str) -> str:
+    """订阅新作的 RSS: ``items`` 为 (作品, 所属订阅名). guid 按番号固定, 同一作品属于多个订阅也只算一条."""
+    parts = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<rss version="2.0"><channel>',
+        f"<title>{escape(title)}</title>",
+        f"<link>{escape(link)}</link>",
+        f"<description>{escape(title)}</description>",
+    ]
+    for r, subs in items:
+        when = _posted_timestamp(r.date) or r.first_seen
+        parts.append(
+            "<item>"
+            f"<title>{escape(f'{r.number} {r.title}'.strip())}</title>"
+            f"<link>{escape(r.url)}</link>"
+            f'<guid isPermaLink="false">{escape(r.source)}-{escape(r.number)}</guid>'
+            f"<pubDate>{formatdate(when, usegmt=True)}</pubDate>"
+            f"<description>{escape(subs)}</description>"
             "</item>"
         )
     parts.append("</channel></rss>")

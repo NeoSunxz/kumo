@@ -183,3 +183,47 @@ def parse_size(text: str) -> int | None:
     if not m:
         return None
     return int(float(m.group(1)) * _UNITS[m.group(2)[0].upper()])
+
+
+@dataclass
+class Subscription:
+    """订阅的一个资料站页面 (女优 / 系列 / 片商 ...)."""
+
+    source: str
+    kind: str
+    ident: str
+    uncensored: bool
+    name: str
+    enabled: bool = True
+    auto_search: bool = False
+    """新作自动加入下载队列去搜磁力; 默认只入新作库, 由用户手动挑选."""
+    checked_at: float | None = None
+    last_error: str = ""
+    release_count: int = 0
+    created_at: float = 0.0
+    id: int | None = None
+
+    @classmethod
+    def from_row(cls, row: sqlite3.Row) -> Subscription:
+        data = dict(row)
+        for key in ("uncensored", "enabled", "auto_search"):
+            data[key] = bool(data[key])
+        return cls(**data)
+
+
+@dataclass
+class Release:
+    """资料站上的一部作品 (新作库的一行); 同一作品可属于多个订阅."""
+
+    source: str
+    number: str
+    title: str
+    date: str | None
+    cover: str | None
+    url: str
+    first_seen: float = 0.0
+    id: int | None = None
+
+    @classmethod
+    def from_row(cls, row: sqlite3.Row) -> Release:
+        return cls(**{k: row[k] for k in row.keys() if k in cls.__dataclass_fields__})

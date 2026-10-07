@@ -6,12 +6,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import html
 import re
 import secrets
 import xml.etree.ElementTree as ET
 from abc import ABC, abstractmethod
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlsplit
 
 import httpx
 
@@ -45,15 +46,26 @@ class Fetcher:
         self._client.cookies.set(name, value, domain=domain)
 
     async def get_text(self, url: str, *, headers: dict[str, str] | None = None) -> tuple[int, str]:
-        try:
-            resp = await self._client.get(url, headers=headers)
-        except httpx.HTTPError as exc:
-            raise SiteError(f"无法访问 {httpx.URL(url).host}: {type(exc).__name__}") from exc
+        resp = await self._send("GET", url, headers=headers)
         if _is_cloudflare_block(resp) and self._solver:
             return await self._via_solver(url)
         if _is_cloudflare_block(resp):
             raise SiteError(f"{httpx.URL(url).host} 被 Cloudflare 拦截 (未配置 FlareSolverr)")
         return resp.status_code, resp.text
+
+    async def post_form(self, url: str, data: dict[str, str], *, headers: dict[str, str] | None = None) -> int:
+        return (await self._send("POST", url, data=data, headers=headers)).status_code
+
+    async def _send(self, method: str, url: str, **kwargs: object) -> httpx.Response:
+        """连接层错误 (握手中断、超时) 重试两次; 站点在国内网络下经常偶发断连."""
+        for attempt in range(3):
+            try:
+                return await self._client.request(method, url, **kwargs)  # type: ignore[arg-type]
+            except httpx.TransportError as exc:
+                if attempt == 2:
+                    raise SiteError(f"无法访问 {httpx.URL(url).host}: {type(exc).__name__}") from exc
+                await asyncio.sleep(2 * (attempt + 1))
+        raise AssertionError("unreachable")
 
     async def _via_solver(self, url: str) -> tuple[int, str]:
         try:
@@ -141,13 +153,41 @@ _JB_TAG = re.compile(r'class="btn btn-mini-new btn-(\w+)')
 _TAG_CLASS = {"primary": Tag.HD, "warning": Tag.SUBTITLE}
 
 
+JAVBUS = "https://www.javbus.com"
+
+
+def is_javbus_verify(text: str) -> bool:
+    # 验证页独有的表单; 详情页、列表页、磁力列表都没有.
+    return 'id="form1"' in text and "你是否已經成年" in text
+
+
+async def javbus_get(fetcher: Fetcher, url: str) -> tuple[int, str]:
+    """GET JavBus 页面; 落到年龄验证页时提交「我已經成年」表单后重试.
+
+    验证是间歇性的 (按 IP / 时段触发): 多数时候直接给出页面, 有时 302 到 ``/doc/driver-verify``.
+    验证页的表单只有一个提交按钮, 通过后状态记在会话 (PHPSESSID) 里. 重试后仍是验证页就报错,
+    不能当成「没有结果」, 否则搜索会静默地什么都找不到.
+    """
+    status, text = await fetcher.get_text(url)
+    if not is_javbus_verify(text):
+        return status, text
+    host = urlsplit(url)
+    verify = f"{host.scheme}://{host.netloc}/doc/driver-verify?referer={quote(url, safe='')}"
+    await fetcher.post_form(
+        verify, {"Submit": "確認"}, headers={"Referer": verify, "Origin": f"{host.scheme}://{host.netloc}"}
+    )
+    status, text = await fetcher.get_text(url)
+    if is_javbus_verify(text):
+        raise SiteError("javbus 年龄验证未通过")
+    return status, text
+
+
 class JavBus(MagnetSite):
     name = "javbus"
-    base = "https://www.javbus.com"
+    base = JAVBUS
 
     async def search(self, fetcher: Fetcher, number: str) -> list[Candidate]:
-        # 首次访问会跳到「驾驶员验证」页再跳回; Fetcher 跟随重定向并保留会话 Cookie.
-        status, page = await fetcher.get_text(f"{self.base}/{number}")
+        status, page = await javbus_get(fetcher, f"{self.base}/{number}")
         if status == 404:
             return []
         if status != 200:

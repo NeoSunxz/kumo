@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from .models import Candidate, LibraryFile, Resource, Wanted, WantedStatus
+from .models import Candidate, LibraryFile, Release, Resource, Subscription, Wanted, WantedStatus
 from .settings import Settings
 
 _SCHEMA = """
@@ -91,6 +91,38 @@ CREATE TABLE IF NOT EXISTS resource (
 );
 CREATE INDEX IF NOT EXISTS ix_resource_number ON resource(number);
 CREATE INDEX IF NOT EXISTS ix_resource_forum ON resource(forum_id, type_id);
+CREATE TABLE IF NOT EXISTS subscription (
+    id             INTEGER PRIMARY KEY,
+    source         TEXT NOT NULL,
+    kind           TEXT NOT NULL,
+    ident          TEXT NOT NULL,
+    uncensored     INTEGER NOT NULL DEFAULT 0,
+    name           TEXT NOT NULL DEFAULT '',
+    enabled        INTEGER NOT NULL DEFAULT 1,
+    auto_search    INTEGER NOT NULL DEFAULT 0,
+    checked_at     REAL,
+    last_error     TEXT NOT NULL DEFAULT '',
+    release_count  INTEGER NOT NULL DEFAULT 0,
+    created_at     REAL NOT NULL,
+    UNIQUE (source, kind, ident, uncensored)
+);
+CREATE TABLE IF NOT EXISTS release (
+    id          INTEGER PRIMARY KEY,
+    source      TEXT NOT NULL,
+    number      TEXT NOT NULL COLLATE NOCASE,
+    title       TEXT NOT NULL DEFAULT '',
+    date        TEXT,
+    cover       TEXT,
+    url         TEXT NOT NULL DEFAULT '',
+    first_seen  REAL NOT NULL,
+    UNIQUE (source, number)
+);
+CREATE INDEX IF NOT EXISTS ix_release_date ON release(date);
+CREATE TABLE IF NOT EXISTS release_sub (
+    release_id       INTEGER NOT NULL REFERENCES release(id) ON DELETE CASCADE,
+    subscription_id  INTEGER NOT NULL REFERENCES subscription(id) ON DELETE CASCADE,
+    PRIMARY KEY (release_id, subscription_id)
+);
 CREATE TABLE IF NOT EXISTS event (
     id       INTEGER PRIMARY KEY,
     at       REAL NOT NULL,
@@ -380,3 +412,107 @@ class Repo:
     def link_resource(self, resource_id: int, wanted_id: int) -> None:
         with self._tx() as c:
             c.execute("UPDATE resource SET wanted_id = ? WHERE id = ?", (wanted_id, resource_id))
+
+    # --- 订阅与新作 ---
+
+    def add_subscription(self, sub: Subscription) -> Subscription:
+        """新增订阅; 同一页面已订阅时返回已有的那条."""
+        with self._tx() as c:
+            c.execute(
+                "INSERT OR IGNORE INTO subscription(source, kind, ident, uncensored, name, auto_search, created_at)"
+                " VALUES(?, ?, ?, ?, ?, ?, ?)",
+                (sub.source, sub.kind, sub.ident, int(sub.uncensored), sub.name, int(sub.auto_search), time.time()),
+            )
+            row = c.execute(
+                "SELECT * FROM subscription WHERE source = ? AND kind = ? AND ident = ? AND uncensored = ?",
+                (sub.source, sub.kind, sub.ident, int(sub.uncensored)),
+            ).fetchone()
+        return Subscription.from_row(row)
+
+    def subscription(self, sub_id: int) -> Subscription | None:
+        row = self._one("SELECT * FROM subscription WHERE id = ?", (sub_id,))
+        return Subscription.from_row(row) if row else None
+
+    def subscriptions(self, *, enabled_only: bool = False) -> list[Subscription]:
+        sql = "SELECT * FROM subscription" + (" WHERE enabled = 1" if enabled_only else "") + " ORDER BY kind, name"
+        return [Subscription.from_row(r) for r in self._all(sql)]
+
+    def update_subscription(self, sub_id: int, **fields: Any) -> None:
+        if not fields:
+            return
+        cols = ", ".join(f"{k} = ?" for k in fields)
+        values = [int(v) if isinstance(v, bool) else v for v in fields.values()]
+        with self._tx() as c:
+            c.execute(f"UPDATE subscription SET {cols} WHERE id = ?", (*values, sub_id))
+
+    def delete_subscription(self, sub_id: int) -> None:
+        """删除订阅; 只属于它的新作一并删除, 同时属于其它订阅的保留."""
+        with self._tx() as c:
+            c.execute("DELETE FROM subscription WHERE id = ?", (sub_id,))
+            c.execute("DELETE FROM release WHERE id NOT IN (SELECT release_id FROM release_sub)")
+
+    def known_release_numbers(self, sub_id: int) -> set[str]:
+        rows = self._all(
+            "SELECT r.number FROM release r JOIN release_sub rs ON rs.release_id = r.id WHERE rs.subscription_id = ?",
+            (sub_id,),
+        )
+        return {r["number"].upper() for r in rows}
+
+    def add_release(self, rel: Release, sub_id: int) -> tuple[Release, bool]:
+        """写入作品并关联到订阅; 返回 (作品, 是否是这个订阅新见到的)."""
+        with self._tx() as c:
+            c.execute(
+                "INSERT INTO release(source, number, title, date, cover, url, first_seen) VALUES(?, ?, ?, ?, ?, ?, ?)"
+                " ON CONFLICT(source, number) DO UPDATE SET title = excluded.title, date = COALESCE(excluded.date, date),"
+                " cover = COALESCE(excluded.cover, cover), url = excluded.url",
+                (rel.source, rel.number, rel.title, rel.date, rel.cover, rel.url, time.time()),
+            )
+            row = c.execute("SELECT * FROM release WHERE source = ? AND number = ?", (rel.source, rel.number)).fetchone()
+            cur = c.execute(
+                "INSERT OR IGNORE INTO release_sub(release_id, subscription_id) VALUES(?, ?)", (row["id"], sub_id)
+            )
+            c.execute(
+                "UPDATE subscription SET release_count = (SELECT COUNT(*) FROM release_sub WHERE subscription_id = ?)"
+                " WHERE id = ?",
+                (sub_id, sub_id),
+            )
+        return Release.from_row(row), cur.rowcount == 1
+
+    def releases(
+        self,
+        *,
+        sub_ids: list[int] | None = None,
+        kinds: list[str] | None = None,
+        search: str = "",
+        days: int | None = None,
+        not_queued: bool = False,
+        limit: int = 200,
+    ) -> list[tuple[Release, str, int | None, str | None]]:
+        """返回 (作品, 所属订阅名, 下载队列里的番号记录 id, 其状态)."""
+        sql = (
+            "SELECT r.*, GROUP_CONCAT(DISTINCT s.name) AS subs, w.id AS wanted_id, w.status AS wanted_status"
+            " FROM release r JOIN release_sub rs ON rs.release_id = r.id JOIN subscription s ON s.id = rs.subscription_id"
+            " LEFT JOIN wanted w ON w.number = r.number WHERE 1=1"
+        )
+        params: list[Any] = []
+        if sub_ids:
+            sql += f" AND s.id IN ({','.join('?' * len(sub_ids))})"
+            params += sub_ids
+        if kinds:
+            sql += f" AND s.kind IN ({','.join('?' * len(kinds))})"
+            params += kinds
+        if search:
+            sql += " AND (r.number LIKE ? OR r.title LIKE ?)"
+            params += [f"%{search}%", f"%{search}%"]
+        if days:
+            sql += " AND r.date >= date('now', ?)"
+            params.append(f"-{int(days)} day")
+        if not_queued:
+            sql += " AND w.id IS NULL"
+        sql += " GROUP BY r.id ORDER BY r.date DESC, r.id DESC LIMIT ?"
+        params.append(limit)
+        return [(Release.from_row(row), row["subs"] or "", row["wanted_id"], row["wanted_status"]) for row in self._all(sql, params)]
+
+    def release(self, release_id: int) -> Release | None:
+        row = self._one("SELECT * FROM release WHERE id = ?", (release_id,))
+        return Release.from_row(row) if row else None

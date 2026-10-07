@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any
 
-from urllib.parse import urlencode
+from urllib.parse import parse_qsl, urlencode, urlsplit
 
 import segno
 from fastapi import FastAPI, Form, HTTPException, Request, Response
@@ -22,12 +22,13 @@ from pydantic import ValidationError
 
 from . import __version__
 from .db import Repo
-from .feeds import render_resource_rss, render_rss
-from .magnets import SITES
+from .feeds import render_release_rss, render_resource_rss, render_rss
+from .magnets import SITES, SiteError
 from .models import STATUS_LABELS, TAG_LABELS, WantedStatus, format_size
 from .numbers import parse_input
 from .pan115 import DeviceAuth, Pan115Error
 from .sehuatang import Sehuatang
+from .subscriptions import KIND_LABELS
 from .service import Service
 from .settings import CrawlForum, Env, InputFeed, Settings
 
@@ -37,7 +38,9 @@ SEARCH_SOURCES = [*SITES, "sehuatang"]
 _TEMPLATES = Jinja2Templates(directory=Path(__file__).parent / "templates")
 _TEMPLATES.env.filters["size"] = format_size
 _TEMPLATES.env.filters["ts"] = lambda t: datetime.fromtimestamp(t).strftime("%m-%d %H:%M") if t else "-"
-_TEMPLATES.env.globals.update(STATUS_LABELS=STATUS_LABELS, TAG_LABELS=TAG_LABELS, version=__version__)
+_TEMPLATES.env.globals.update(
+    STATUS_LABELS=STATUS_LABELS, TAG_LABELS=TAG_LABELS, KIND_LABELS=KIND_LABELS, version=__version__
+)
 
 
 def create_app(env: Env | None = None, service: Service | None = None) -> FastAPI:
@@ -224,6 +227,9 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
                 crawl_pages=int(data.get("crawl_pages") or 2),
                 crawl_interval_minutes=float(data.get("crawl_interval_minutes") or 60),
                 crawl_request_delay=float(data.get("crawl_request_delay") or 1.5),
+                subs_interval_hours=float(data.get("subs_interval_hours") or 12),
+                subs_pages=int(data.get("subs_pages") or 1),
+                subs_initial_pages=int(data.get("subs_initial_pages") or 3),
             )
         except (ValidationError, ValueError) as exc:
             return page(request, "settings.html", s=svc(request).settings, sites=SEARCH_SOURCES, message=f"保存失败: {exc}")
@@ -327,6 +333,99 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
         asyncio.create_task(svc(request).run_guarded("submit", svc(request).run_submit))
         return back(f"/wanted/{wanted_id}")
 
+    # --- 订阅与新作 ---
+
+    @app.get("/subscriptions", response_class=HTMLResponse)
+    async def subscriptions(request: Request, message: str = "") -> HTMLResponse:
+        s = svc(request)
+        base = str(request.base_url)
+        return page(request, "subscriptions.html", subs=s.repo.subscriptions(), base=base, message=message)
+
+    @app.post("/subscriptions")
+    async def add_subscription(request: Request, url: Annotated[str, Form()], auto_search: Annotated[str, Form()] = "") -> Response:
+        s = svc(request)
+        try:
+            sub = await s.add_subscription(url, auto_search=bool(auto_search))
+        except (ValueError, SiteError) as exc:
+            return page(request, "subscriptions.html", subs=s.repo.subscriptions(), base=str(request.base_url), message=f"添加失败: {exc}")
+        asyncio.create_task(s.run_guarded("subs", lambda: s.check_subscription(sub)))
+        return back("/subscriptions")
+
+    @app.post("/subscriptions/{sub_id}/{action}")
+    async def subscription_action(request: Request, sub_id: int, action: str) -> RedirectResponse:
+        s = svc(request)
+        sub = s.repo.subscription(sub_id)
+        if sub is None:
+            raise HTTPException(404)
+        if action == "check":
+            asyncio.create_task(s.run_guarded("subs", lambda: s.check_subscription(sub)))
+        elif action == "toggle":
+            s.repo.update_subscription(sub_id, enabled=not sub.enabled)
+        elif action == "auto":
+            s.repo.update_subscription(sub_id, auto_search=not sub.auto_search)
+        elif action == "delete":
+            s.repo.delete_subscription(sub_id)
+        else:
+            raise HTTPException(400, "未知操作")
+        return back("/subscriptions")
+
+    def _release_filters(sub: str, kind: str) -> tuple[list[int], list[str]]:
+        try:
+            sub_ids = _int_list(sub)
+        except ValueError as exc:
+            raise HTTPException(400, "sub 应为逗号分隔的订阅编号") from exc
+        kinds = [k for k in kind.split(",") if k in KIND_LABELS]
+        return sub_ids, kinds
+
+    @app.get("/releases", response_class=HTMLResponse)
+    async def releases(
+        request: Request, sub: str = "", kind: str = "", q: str = "", days: int | None = None, todo: str = "", message: str = ""
+    ) -> HTMLResponse:
+        s = svc(request)
+        sub_ids, kinds = _release_filters(sub, kind)
+        params = {k: v for k, v in (("sub", sub), ("kind", kind), ("q", q.strip()), ("days", days)) if v}
+        rss_url = str(request.base_url) + "rss/releases.xml" + ("?" + urlencode(params) if params else "")
+        if env.password:
+            rss_url += ("&" if params else "?") + "key=<密码>"
+        return page(
+            request,
+            "releases.html",
+            items=s.repo.releases(sub_ids=sub_ids, kinds=kinds, search=q.strip(), days=days, not_queued=todo == "1", limit=300),
+            subs=s.repo.subscriptions(),
+            sub=sub,
+            kind=kind,
+            q=q,
+            days=days,
+            todo=todo,
+            rss_url=rss_url,
+            message=message,
+        )
+
+    @app.post("/releases/queue")
+    async def queue_releases(request: Request) -> RedirectResponse:
+        form = await request.form()
+        ids = [int(v) for v in form.getlist("ids") if str(v).isdigit()]
+        s = svc(request)
+        added = s.queue_releases(ids)
+        if added:
+            asyncio.create_task(s.run_guarded("search", s.run_search))
+        referer = urlsplit(request.headers.get("referer") or "/releases")
+        query = [(k, v) for k, v in parse_qsl(referer.query) if k != "message"]
+        query.append(("message", f"已加入下载队列 {added} 部 (已在队列中的跳过)"))
+        return back(f"/releases?{urlencode(query)}")
+
+    @app.get("/rss/releases.xml")
+    async def rss_releases(
+        request: Request, sub: str = "", kind: str = "", q: str = "", days: int | None = None, limit: int = 100
+    ) -> Response:
+        """订阅新作 RSS, 供 Amane 刮削元数据; 参数与新作页面的筛选一致."""
+        s = svc(request)
+        sub_ids, kinds = _release_filters(sub, kind)
+        rows = s.repo.releases(sub_ids=sub_ids, kinds=kinds, search=q.strip(), days=days, limit=max(1, min(limit, 500)))
+        label = " ".join(x for x in ("kumo 新作", sub and f"sub={sub}", kind, q) if x)
+        body = render_release_rss([(r, subs) for r, subs, _, _ in rows], title=label, link=str(request.url))
+        return Response(body, media_type="application/rss+xml; charset=utf-8")
+
     # --- 手动触发与日志 ---
 
     @app.post("/run/{job}")
@@ -334,7 +433,7 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
         s = svc(request)
         jobs = {
             "search": s.run_search, "submit": s.run_submit, "tasks": s.run_tasks, "sync": s.run_sync,
-            "feeds": s.run_feeds, "crawl": s.run_crawl,
+            "feeds": s.run_feeds, "crawl": s.run_crawl, "subs": lambda: s.run_subscriptions(force=True),
         }
         if job not in jobs:
             raise HTTPException(404)

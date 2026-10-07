@@ -1,7 +1,8 @@
 {% extends "base.html" %}
+{% block title %}下载队列 - kumo{% endblock %}
 {% block content %}
 <div class="card">
-  <h2>添加番号</h2>
+  <h2>添加番号到下载队列</h2>
   <form method="post" action="/wanted">
     <textarea name="numbers" placeholder="每行一个, 也可以用逗号分隔; 支持直接粘贴文件名或标题, 会自动识别番号"></textarea>
     <p><button class="primary">添加并搜索</button>

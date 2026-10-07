@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}新作 - kumo{% endblock %}
+{% block content %}
+{% if message %}<div class="alert">{{ message }}</div>{% endif %}
+<div class="card">
+  <form method="get" action="/releases" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+    <select name="sub" style="width:auto">
+      <option value="">全部订阅</option>
+      {% for s in subs %}<option value="{{ s.id }}" {% if sub == s.id|string %}selected{% endif %}>{{ ('无码' if s.uncensored else '') ~ KIND_LABELS.get(s.kind, s.kind) }} · {{ s.name }}</option>{% endfor %}
+    </select>
+    <select name="kind" style="width:auto">
+      <option value="">全部类型</option>
+      {% for k, label in KIND_LABELS.items() %}<option value="{{ k }}" {% if kind == k %}selected{% endif %}>{{ label }}</option>{% endfor %}
+    </select>
+    <select name="days" style="width:auto">
+      <option value="">全部时间</option>
+      {% for d in (7, 30, 90, 365) %}<option value="{{ d }}" {% if days == d %}selected{% endif %}>最近 {{ d }} 天</option>{% endfor %}
+    </select>
+    <input type="text" name="q" value="{{ q }}" placeholder="番号或标题" style="flex:1;min-width:140px">
+    <label class="check" style="margin:0"><input type="checkbox" name="todo" value="1" {% if todo == '1' %}checked{% endif %}> 只看未加入队列的</label>
+    <button>筛选</button>
+  </form>
+  <p class="muted" style="margin:10px 0 0">当前筛选的 RSS（复制到 Amane「远程发现」订阅，用于刮削元数据）：<br>
+    <code class="break" style="user-select:all">{{ rss_url }}</code></p>
+</div>
+
+<form method="post" action="/releases/queue" class="card">
+  <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
+    <button type="button" onclick="document.querySelectorAll('input[name=ids]').forEach(c => c.checked = !c.disabled)">全选</button>
+    <button type="button" onclick="document.querySelectorAll('input[name=ids]').forEach(c => c.checked = false)">清除</button>
+    <button class="primary">选中的去搜磁力</button>
+    <span class="muted">加入下载队列后按磁力规则自动选择并提交 115</span>
+  </div>
+  <div class="scroll"><table>
+    <tr><th></th><th>番号</th><th>标题</th><th>发行</th><th>订阅</th><th>队列</th></tr>
+    {% for r, subs_name, wanted_id, wanted_status in items %}
+    <tr>
+      <td><input type="checkbox" name="ids" value="{{ r.id }}" {% if wanted_id %}disabled{% endif %}></td>
+      <td style="white-space:nowrap"><a href="{{ r.url }}" target="_blank" rel="noreferrer">{{ r.number }}</a></td>
+      <td class="break">{{ r.title }}</td>
+      <td class="muted" style="white-space:nowrap">{{ r.date or '-' }}</td>
+      <td class="muted">{{ subs_name }}</td>
+      <td style="white-space:nowrap">{% if wanted_id %}<a href="/wanted/{{ wanted_id }}"><span class="badge s-{{ wanted_status }}">{{ STATUS_LABELS.get(wanted_status, wanted_status) }}</span></a>{% endif %}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="6" class="muted">没有作品。先到「订阅」添加女优、系列或片商。</td></tr>
+    {% endfor %}
+  </table></div>
+</form>
+{% endblock %}

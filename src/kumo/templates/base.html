@@ -17,7 +17,9 @@
 body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
 header { background: var(--card); border-bottom: 1px solid var(--line); padding: 10px 16px; display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
 header b { font-size: 16px; }
-header nav { display: flex; gap: 14px; flex-wrap: wrap; }
+header nav { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; padding: 2px 10px; border-left: 1px solid var(--line); }
+header nav .group { font-size: 12px; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 6px; }
+.section-title { font-size: 13px; color: var(--muted); margin: 18px 0 8px; letter-spacing: .05em; }
 header .auth { margin-left: auto; font-size: 13px; }
 a { color: var(--accent); text-decoration: none; }
 main { max-width: 1100px; margin: 0 auto; padding: 16px; }
@@ -58,13 +60,20 @@ label > span { display: block; color: var(--muted); font-size: 13px; margin-bott
 <header>
   <b>kumo</b>
   <nav>
-    <a href="/">番号</a>
-    <a href="/resources">爬取</a>
-    <a href="/library">115 目录</a>
-    <a href="/auth">115 授权</a>
+    <span class="group">115</span>
+    <a href="/">下载队列</a>
+    <a href="/library">目录同步</a>
+    <a href="/auth">授权</a>
+  </nav>
+  <nav>
+    <span class="group">爬取</span>
+    <a href="/releases">新作</a>
+    <a href="/subscriptions">订阅</a>
+    <a href="/resources">论坛</a>
+  </nav>
+  <nav>
     <a href="/settings">设置</a>
     <a href="/events">日志</a>
-    <a href="/rss.xml">RSS</a>
   </nav>
   <span class="auth">{% if authorized %}<span class="ok">● 115 已授权</span>{% else %}<a href="/auth">○ 115 未授权</a>{% endif %}</span>
 </header>
