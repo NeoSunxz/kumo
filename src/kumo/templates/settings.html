@@ -109,6 +109,10 @@
     <label><span>已查过的番号多久后重查（天）</span><input type="number" step="any" name="amane_refresh_days" value="{{ s.amane_refresh_days }}"></label>
   </div>
   {% if s.amane_token %}<label class="check"><input type="checkbox" name="clear_amane_token"> 清除已保存的 token</label>{% endif %}
+  <div class="bar" style="margin-top:4px">
+    <button type="submit" formaction="/settings/amane-test" formnovalidate>测试连接</button>
+    <span class="muted small">用已保存的地址与 token 测试；改了先保存。Amane 默认端口 8000。token 在 Amane 数据目录的 <code>token</code> 文件里（Amane 没设 <code>AMANE_TOKEN</code> 时自动生成；设成 <code>off</code> 则不需要）</span>
+  </div>
 </div>
 
 <div class="section-title" id="network">网络</div>

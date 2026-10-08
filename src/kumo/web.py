@@ -22,6 +22,7 @@ from pydantic import ValidationError
 
 from . import __version__
 from .db import Repo
+from .amane import AmaneError
 from .feeds import render_release_rss, render_resource_rss, render_rss
 from .images import ImageCache, ImageError
 from .magnets import SITES, SiteError
@@ -282,6 +283,22 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
             return page(request, "settings.html", s=svc(request).settings, sites=SEARCH_SOURCES, message=f"保存失败: {exc}")
         svc(request).repo.save_settings(settings)
         return page(request, "settings.html", s=settings, sites=SEARCH_SOURCES, message="已保存")
+
+    @app.post("/settings/amane-test")
+    async def amane_test(request: Request) -> RedirectResponse:
+        """用已保存的地址与 token 测试 Amane; 结果显示在设置页顶部."""
+        amane = svc(request).amane()
+        if amane is None:
+            flash = "还没有填写 Amane 地址"
+        else:
+            try:
+                total = await amane.check()
+                flash = f"Amane 连接正常, 媒体库里有 {total} 部作品"
+            except AmaneError as exc:
+                flash = f"Amane 连接失败: {exc}"
+            finally:
+                await amane.aclose()
+        return back(f"/settings?{urlencode({'flash': flash})}#amane")
 
     # --- 115 授权 ---
 

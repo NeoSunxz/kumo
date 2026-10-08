@@ -43,7 +43,7 @@ class FakeAmane:
             return httpx.Response(401, json={"detail": "缺少或无效的 API token."})
         path = request.url.path
         if path == "/api/metadata":
-            q = request.url.params["search"].casefold()
+            q = request.url.params.get("search", "").casefold()
             items = [i for i in METADATA["items"] if q in i["number"].casefold()]
             return httpx.Response(200, json={"items": items, "total": len(items)})
         if path == "/api/actors":
@@ -183,3 +183,13 @@ def test_pages_use_amane_content(service: Service, amane: FakeAmane, tmp_path: P
 def test_amane_image_without_config(service: Service, tmp_path: Path) -> None:
     with TestClient(create_app(Env(data_dir=tmp_path, password=""), service=service)) as c:
         assert c.get("/img/amane", params={"u": "/api/resources/x"}).status_code == 404
+
+
+def test_settings_amane_test_button(service: Service, amane: FakeAmane, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    with TestClient(create_app(Env(data_dir=tmp_path, password=""), service=service)) as c:
+        page = c.post("/settings/amane-test").text
+        assert "Amane 连接正常, 媒体库里有" in page
+        monkeypatch.setattr(Service, "amane", lambda self: amane.client(token="wrong"))
+        assert "Amane 连接失败" in c.post("/settings/amane-test").text and "token" in c.post("/settings/amane-test").text
+        monkeypatch.setattr(Service, "amane", lambda self: None)
+        assert "还没有填写 Amane 地址" in c.post("/settings/amane-test").text

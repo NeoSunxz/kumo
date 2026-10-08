@@ -49,6 +49,11 @@ class Amane:
         except ValueError as exc:
             raise AmaneError("Amane 返回的不是 JSON, 请检查地址") from exc
 
+    async def check(self) -> int:
+        """测试连接与 token; 返回 Amane 里的作品总数. ``/api/health`` 不校验 token, 所以查一页作品."""
+        data = await self._get("/api/metadata", {"limit": 1})
+        return int(data.get("total") or 0)
+
     async def work(self, number: str) -> Work:
         """按番号查作品. ``/api/metadata?search=`` 是番号与标题的模糊匹配, 这里只取番号完全一致的."""
         data = await self._get("/api/metadata", {"search": number, "limit": 20})
