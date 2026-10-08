@@ -3,18 +3,25 @@
 JavBus 的图片校验 Referer, 浏览器从 kumo 的页面直接引用会得到 403; 因此图片一律由 kumo 带上
 对应站点的 Referer 取回, 缓存到数据目录, 之后直接从磁盘返回. 只代理资料站的图片域名,
 不是通用代理.
+
+Amane 的图片 (``get_amane``) 由 Amane 自己取回或从本地返回, kumo 带上 API token 去 Amane 取, 同样缓存.
 """
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
+from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
 import httpx
 
 from .magnets import UA
+
+if TYPE_CHECKING:
+    from .amane import Amane
 
 # 允许代理的图片域名 (含子域) 与取图时使用的 Referer.
 _HOSTS = {
@@ -60,7 +67,27 @@ class ImageCache:
         referer = referer_for(url)
         if referer is None:
             raise ImageError("不代理这个地址")
-        key = hashlib.sha1(url.encode()).hexdigest()
+
+        async def fetch() -> httpx.Response:
+            async with httpx.AsyncClient(proxy=proxy or None, timeout=20.0, follow_redirects=True) as client:
+                return await client.get(url, headers={"User-Agent": UA, "Referer": referer})
+
+        return await self._load(url, fetch)
+
+    async def get_amane(self, url: str, amane: Amane) -> Path:
+        """Amane 作品 / 演员的图片; 缓存键带上 Amane 地址, 换了 Amane 不会串图."""
+        from .amane import AmaneError
+
+        async def fetch() -> httpx.Response:
+            try:
+                return await amane.fetch_image(url)
+            except AmaneError as exc:
+                raise ImageError(str(exc)) from exc
+
+        return await self._load(f"amane:{amane.base_url}:{url}", fetch)
+
+    async def _load(self, cache_key: str, fetch: Callable[[], Awaitable[httpx.Response]]) -> Path:
+        key = hashlib.sha1(cache_key.encode()).hexdigest()
         cached = self._cached(key)
         if cached:
             return cached
@@ -69,8 +96,7 @@ class ImageCache:
             if cached:
                 return cached
             try:
-                async with httpx.AsyncClient(proxy=proxy or None, timeout=20.0, follow_redirects=True) as client:
-                    resp = await client.get(url, headers={"User-Agent": UA, "Referer": referer})
+                resp = await fetch()
             except httpx.HTTPError as exc:
                 raise ImageError(f"取图失败: {type(exc).__name__}") from exc
         ctype = resp.headers.get("content-type", "").split(";")[0].strip().lower()

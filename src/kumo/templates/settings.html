@@ -3,10 +3,14 @@
 {% block content %}
 <div class="page-head">
   <div><h1>设置</h1><p class="lead">保存后立即生效，下一轮调度读取新值</p></div>
+  <div class="actions small">
+    <a href="#download">115</a><a href="#source">片源</a><a href="#magnet">磁力</a><a href="#amane">Amane</a><a href="#network">网络</a>
+  </div>
 </div>
 {% if message %}<div class="alert {{ 'success' if message == '已保存' else 'error' }}"><span>{{ message }}</span></div>{% endif %}
 <form method="post" action="/settings" style="max-width:920px">
-<div class="section-title" style="margin-top:0">115 与下载</div>
+
+<div class="section-title" id="download" style="margin-top:0">115 · 下载</div>
 <div class="card">
   <h2>115 开放平台</h2>
   <div class="grid">
@@ -19,19 +23,31 @@
   <label><span>目录同步间隔（小时）</span><input type="number" step="any" name="sync_interval_hours" value="{{ s.sync_interval_hours }}"></label>
 </div>
 
+<div class="section-title" id="source">片源 · 订阅作品 → 搜磁力 → 选磁力</div>
 <div class="card">
-  <h2>磁力刮削</h2>
-  <div class="muted small" style="margin-bottom:6px">磁力来源（sehuatang 查本地已爬取的资源库）</div>
-  <div class="checks">{% for name in sites %}<label class="check"><input type="checkbox" name="site_{{ name }}" {% if name in s.sites %}checked{% endif %}> {{ name }}</label>{% endfor %}</div>
+  <h2>订阅</h2>
   <div class="grid">
-    <label><span>刮削代理（可空）</span><input type="text" name="scrape_proxy" value="{{ s.scrape_proxy }}" placeholder="http://user:pass@host:port"></label>
-    <label><span>FlareSolverr 地址（可空）</span><input type="text" name="flaresolverr_url" value="{{ s.flaresolverr_url }}" placeholder="http://192.168.100.110:8191"></label>
-    <label><span>没搜到时多久后重试（小时）</span><input type="number" step="any" name="no_magnet_retry_hours" value="{{ s.no_magnet_retry_hours }}"></label>
+    <label><span>检查间隔（小时）</span><input type="number" step="any" name="subs_interval_hours" value="{{ s.subs_interval_hours }}"></label>
+    <label><span>每次检查最多翻几页</span><input type="number" name="subs_pages" value="{{ s.subs_pages }}" min="1" max="10"></label>
+    <label><span>新订阅首次回填几页（每页 30 部）</span><input type="number" name="subs_initial_pages" value="{{ s.subs_initial_pages }}" min="1" max="30"></label>
   </div>
+  <label><span>JavDB Cookie（标签订阅需要登录；登录 JavDB 后在浏览器开发者工具里复制 Cookie，至少包含 _jdb_session）
+    {% if s.javdb_cookie %}<b class="ok">· 已填写</b>，留空保持不变{% endif %}</span>
+    <input type="password" name="javdb_cookie" value="" placeholder="{{ '••••••（已保存）' if s.javdb_cookie else '_jdb_session=...' }}" autocomplete="off"></label>
+  {% if s.javdb_cookie %}<label class="check"><input type="checkbox" name="clear_javdb_cookie"> 清除已保存的 JavDB Cookie</label>{% endif %}
+  <p class="hint" style="margin:0">订阅在「片源 → 订阅」页面添加。</p>
 </div>
 
 <div class="card">
-  <h2>磁力选择</h2>
+  <h2>按番号搜磁力</h2>
+  <div class="muted small" style="margin-bottom:6px">搜索来源（sehuatang 指本地磁力池，含论坛与 sukebei 爬到的磁力，不发网络请求）</div>
+  <div class="checks">{% for name in sites %}<label class="check"><input type="checkbox" name="site_{{ name }}" {% if name in s.sites %}checked{% endif %}> {{ '磁力池' if name == 'sehuatang' else name }}</label>{% endfor %}</div>
+  <label><span>没搜到时多久后重试（小时）</span><input type="number" step="any" name="no_magnet_retry_hours" value="{{ s.no_magnet_retry_hours }}" style="max-width:240px"></label>
+</div>
+
+<div class="card">
+  <h2>磁力选择规则</h2>
+  <p class="hint" style="margin:-6px 0 12px">两条路径共用：片源搜到的候选按它自动选择；磁力池按它给同一番号的磁力排序，sukebei 规则的「自动」也只提交符合它的。</p>
   <div class="grid">
     <label><span>最小体积（GB，0 不限）</span><input type="number" step="any" name="size_min_gb" value="{{ s.size_min_gb }}"></label>
     <label><span>最大体积（GB，0 不限）</span><input type="number" step="any" name="size_max_gb" value="{{ s.size_max_gb }}"></label>
@@ -45,43 +61,63 @@
   </div>
 </div>
 
+<div class="section-title" id="magnet">磁力 · 爬取优质磁力 → 识别番号 → 确认影片</div>
 <div class="card">
-  <h2>输入 RSS</h2>
-  <label><span>每行一个：地址 | 包含关键词(逗号分隔) | 排除关键词(逗号分隔)，后两段可省略</span>
-    <textarea name="input_feeds">{% for f in s.input_feeds %}{{ f.url }}{% if f.include_keywords or f.exclude_keywords %} | {{ f.include_keywords|join(',') }} | {{ f.exclude_keywords|join(',') }}{% endif %}
-{% endfor %}</textarea></label>
-  <label><span>读取间隔（分钟）</span><input type="number" step="any" name="feed_interval_minutes" value="{{ s.feed_interval_minutes }}"></label>
-</div>
-
-<div class="section-title">爬取</div>
-<div class="card">
-  <h2>订阅（按女优 / 系列 / 片商获取新作）</h2>
-  <div class="grid">
-    <label><span>检查间隔（小时）</span><input type="number" step="any" name="subs_interval_hours" value="{{ s.subs_interval_hours }}"></label>
-    <label><span>每次检查最多翻几页</span><input type="number" name="subs_pages" value="{{ s.subs_pages }}" min="1" max="10"></label>
-    <label><span>新订阅首次回填几页（每页 30 部）</span><input type="number" name="subs_initial_pages" value="{{ s.subs_initial_pages }}" min="1" max="30"></label>
-  </div>
-  <label><span>JavDB Cookie（标签订阅需要登录；登录 JavDB 后在浏览器开发者工具里复制 Cookie，至少包含 _jdb_session）
-    {% if s.javdb_cookie %}<b class="ok">· 已填写</b>，留空保持不变{% endif %}</span>
-    <input type="password" name="javdb_cookie" value="" placeholder="{{ '••••••（已保存）' if s.javdb_cookie else '_jdb_session=...' }}" autocomplete="off"></label>
-  {% if s.javdb_cookie %}<label class="check"><input type="checkbox" name="clear_javdb_cookie"> 清除已保存的 JavDB Cookie</label>{% endif %}
-  <p class="hint" style="margin:0">订阅在「爬取 → 订阅」页面添加。请求间隔与下面的论坛爬取共用。</p>
-</div>
-
-<div class="card">
-  <h2>论坛爬取（sehuatang）</h2>
+  <h2>论坛（sehuatang）</h2>
   <div class="checks"><label class="check"><input type="checkbox" name="crawl_enabled" {% if s.crawl_enabled %}checked{% endif %}> 启用定时爬取</label></div>
   <div class="grid">
     <label><span>站点地址（换域名时改这里）</span><input type="text" name="crawl_base_url" value="{{ s.crawl_base_url }}"></label>
     <label><span>每轮每个板块最多翻几页</span><input type="number" name="crawl_pages" value="{{ s.crawl_pages }}" min="1" max="20"></label>
     <label><span>爬取间隔（分钟）</span><input type="number" step="any" name="crawl_interval_minutes" value="{{ s.crawl_interval_minutes }}"></label>
-    <label><span>请求间隔（秒，订阅检查也用这个）</span><input type="number" step="any" name="crawl_request_delay" value="{{ s.crawl_request_delay }}"></label>
   </div>
   <label><span>爬取目标，每行一个：板块编号[:分类编号] | 自动/入库 | 分类名(逗号) | 包含词(逗号) | 排除词(逗号)，后几段可省略。
     常用板块：103 高清中文字幕，36 亚洲无码原创，37 亚洲有码原创，151 4K原版；分类如 36:369 只爬 HEYZO，103:480 只爬有码高清。
-    「入库」只记录不下载，「自动」会把符合条件的新帖直接提交下载。</span>
+    「入库」进磁力池等你确认影片，「自动」会把符合条件的新帖直接提交下载。</span>
     <textarea name="crawl_forums">{% for f in s.crawl_forums %}{{ f.fid }}{% if f.typeid %}:{{ f.typeid }}{% endif %} | {{ '自动' if f.auto_download else '入库' }}{% if f.types or f.include_keywords or f.exclude_keywords %} | {{ f.types|join(',') }} | {{ f.include_keywords|join(',') }} | {{ f.exclude_keywords|join(',') }}{% endif %}
 {% endfor %}</textarea></label>
+</div>
+
+<div class="card">
+  <h2>sukebei</h2>
+  <label><span>爬取规则，每行一个：名称 | 搜索词 | 选项。符合规则的新磁力进入磁力池（为空不爬取；按番号搜磁力不受影响）。<br>
+    选项用空格分隔，都可省略：<code>自动</code> 符合磁力选择规则的直接提交，<code>可信</code> 只要可信上传者，<code>做种&gt;=5</code>，
+    <code>上传者:名字</code>，<code>分类:2_2</code>（默认 2_2 Real Life - Videos），<code>+包含词</code>，<code>-排除词</code>。<br>
+    例：<code>中字 | 中文字幕 | 可信 做种&gt;=3 -4K</code></span>
+    <textarea name="sukebei_rules" placeholder="中字 | 中文字幕 | 可信 做种>=3">{% for r in s.sukebei_rules %}{{ r|sukebei_rule }}
+{% endfor %}</textarea></label>
+  <label><span>爬取间隔（分钟）</span><input type="number" step="any" name="sukebei_interval_minutes" value="{{ s.sukebei_interval_minutes }}" style="max-width:240px"></label>
+</div>
+
+<div class="card">
+  <h2>输入 RSS</h2>
+  <label><span>条目带磁力的直接下载，只有番号的去搜磁力。每行一个：地址 | 包含关键词(逗号分隔) | 排除关键词(逗号分隔)，后两段可省略</span>
+    <textarea name="input_feeds">{% for f in s.input_feeds %}{{ f.url }}{% if f.include_keywords or f.exclude_keywords %} | {{ f.include_keywords|join(',') }} | {{ f.exclude_keywords|join(',') }}{% endif %}
+{% endfor %}</textarea></label>
+  <label><span>读取间隔（分钟）</span><input type="number" step="any" name="feed_interval_minutes" value="{{ s.feed_interval_minutes }}" style="max-width:240px"></label>
+</div>
+
+<div class="section-title" id="amane">Amane · 内容填充</div>
+<div class="card">
+  <h2>Amane</h2>
+  <p class="hint" style="margin:-6px 0 12px">按番号读取 Amane 的标题、海报、封面、演员，按名字读取演员头像与资料，填充作品、磁力池、下载队列与女优页面；只读，不改 Amane。
+    Amane 里还没有的番号，可以让 Amane「远程发现」订阅 kumo 的 RSS 去刮削，之后这里自动补上。</p>
+  <div class="grid">
+    <label><span>Amane 地址</span><input type="text" name="amane_url" value="{{ s.amane_url }}" placeholder="http://192.168.100.110:8000"></label>
+    <label><span>API token（Amane 未设 token 时留空）{% if s.amane_token %} <b class="ok">· 已填写</b>，留空保持不变{% endif %}</span>
+      <input type="password" name="amane_token" value="" placeholder="{{ '••••••（已保存）' if s.amane_token else '' }}" autocomplete="off"></label>
+    <label><span>同步间隔（分钟）</span><input type="number" step="any" name="amane_interval_minutes" value="{{ s.amane_interval_minutes }}"></label>
+    <label><span>已查过的番号多久后重查（天）</span><input type="number" step="any" name="amane_refresh_days" value="{{ s.amane_refresh_days }}"></label>
+  </div>
+  {% if s.amane_token %}<label class="check"><input type="checkbox" name="clear_amane_token"> 清除已保存的 token</label>{% endif %}
+</div>
+
+<div class="section-title" id="network">网络</div>
+<div class="card">
+  <div class="grid">
+    <label><span>刮削代理（可空）</span><input type="text" name="scrape_proxy" value="{{ s.scrape_proxy }}" placeholder="http://user:pass@host:port"></label>
+    <label><span>FlareSolverr 地址（可空）</span><input type="text" name="flaresolverr_url" value="{{ s.flaresolverr_url }}" placeholder="http://192.168.100.110:8191"></label>
+    <label><span>请求间隔（秒，爬取与订阅检查共用）</span><input type="number" step="any" name="crawl_request_delay" value="{{ s.crawl_request_delay }}"></label>
+  </div>
 </div>
 
 <div class="selbar" style="position:sticky;top:auto;bottom:16px;margin-top:6px">

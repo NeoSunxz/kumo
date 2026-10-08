@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from .models import Candidate, LibraryFile, Release, Resource, Subscription, Wanted, WantedStatus
+from .models import AmaneActor, Candidate, LibraryFile, Release, Resource, Subscription, Wanted, WantedStatus, Work
 from .settings import Settings
 
 _SCHEMA = """
@@ -85,7 +85,9 @@ CREATE TABLE IF NOT EXISTS resource (
     size        INTEGER,
     posted      TEXT,
     subtitle    INTEGER NOT NULL DEFAULT 0,
+    seeders     INTEGER,
     wanted_id   INTEGER REFERENCES wanted(id) ON DELETE SET NULL,
+    dismissed   INTEGER NOT NULL DEFAULT 0,
     crawled_at  REAL NOT NULL,
     UNIQUE (source, tid)
 );
@@ -125,6 +127,27 @@ CREATE TABLE IF NOT EXISTS release_sub (
     subscription_id  INTEGER NOT NULL REFERENCES subscription(id) ON DELETE CASCADE,
     PRIMARY KEY (release_id, subscription_id)
 );
+CREATE TABLE IF NOT EXISTS amane_work (
+    number      TEXT PRIMARY KEY COLLATE NOCASE,
+    found       INTEGER NOT NULL,
+    title       TEXT NOT NULL DEFAULT '',
+    date        TEXT,
+    actors      TEXT NOT NULL DEFAULT '[]',
+    studio      TEXT NOT NULL DEFAULT '',
+    poster      TEXT,
+    thumb       TEXT,
+    amane_id    INTEGER,
+    file_count  INTEGER NOT NULL DEFAULT 0,
+    checked_at  REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS amane_actor (
+    name        TEXT PRIMARY KEY COLLATE NOCASE,
+    found       INTEGER NOT NULL,
+    image       TEXT,
+    profile     TEXT NOT NULL DEFAULT '{}',
+    amane_id    INTEGER,
+    checked_at  REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS event (
     id       INTEGER PRIMARY KEY,
     at       REAL NOT NULL,
@@ -153,6 +176,9 @@ class Repo:
         cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(resource)")}
         if cols and "type_id" not in cols:
             self._conn.execute("ALTER TABLE resource ADD COLUMN type_id INTEGER")
+        if cols and "seeders" not in cols:
+            self._conn.execute("ALTER TABLE resource ADD COLUMN seeders INTEGER")
+            self._conn.execute("ALTER TABLE resource ADD COLUMN dismissed INTEGER NOT NULL DEFAULT 0")
         cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(subscription)")}
         if cols and "avatar" not in cols:
             self._conn.execute("ALTER TABLE subscription ADD COLUMN avatar TEXT")
@@ -354,10 +380,11 @@ class Repo:
         with self._tx() as c:
             c.execute(
                 "INSERT OR IGNORE INTO resource(source, tid, forum_id, forum_name, type_id, type_name, title, number,"
-                " magnet, info_hash, size, posted, subtitle, crawled_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " magnet, info_hash, size, posted, subtitle, seeders, crawled_at)"
+                " VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     r.source, r.tid, r.forum_id, r.forum_name, r.type_id, r.type_name, r.title, r.number,
-                    r.magnet, r.info_hash, r.size, r.posted, int(r.subtitle), time.time(),
+                    r.magnet, r.info_hash, r.size, r.posted, int(r.subtitle), r.seeders, time.time(),
                 ),
             )
             row = c.execute("SELECT * FROM resource WHERE source = ? AND tid = ?", (r.source, r.tid)).fetchone()
@@ -371,6 +398,7 @@ class Repo:
         self,
         *,
         search: str = "",
+        sources: list[str] | None = None,
         forum_ids: list[int] | None = None,
         type_ids: list[int] | None = None,
         subtitle: bool | None = None,
@@ -382,6 +410,9 @@ class Repo:
         if search:
             sql += " AND (title LIKE ? OR number LIKE ?)"
             params += [f"%{search}%", f"%{search}%"]
+        if sources:
+            sql += f" AND source IN ({','.join('?' * len(sources))})"
+            params += sources
         if forum_ids:
             sql += f" AND forum_id IN ({','.join('?' * len(forum_ids))})"
             params += forum_ids
@@ -395,7 +426,7 @@ class Repo:
             sql += " AND number IS NOT NULL"
         if with_magnet:
             sql += " AND magnet IS NOT NULL"
-        sql += " ORDER BY tid DESC LIMIT ?"
+        sql += " ORDER BY crawled_at DESC, tid DESC LIMIT ?"
         params.append(limit)
         return [Resource.from_row(r) for r in self._all(sql, params)]
 
@@ -405,8 +436,118 @@ class Repo:
 
     def resource_forums(self) -> list[sqlite3.Row]:
         return self._all(
-            "SELECT forum_id, MAX(forum_name) AS forum_name, COUNT(*) AS n FROM resource GROUP BY forum_id ORDER BY forum_id"
+            "SELECT forum_id, MAX(forum_name) AS forum_name, COUNT(*) AS n FROM resource WHERE source = 'sehuatang'"
+            " GROUP BY forum_id ORDER BY forum_id"
         )
+
+    def resource_sources(self) -> dict[str, int]:
+        return {r["source"]: r["n"] for r in self._all("SELECT source, COUNT(*) AS n FROM resource GROUP BY source")}
+
+    # --- 磁力池: 有番号、有磁力、还没进下载队列的资源, 等待确认影片 ---
+
+    _PENDING = (
+        "number IS NOT NULL AND magnet IS NOT NULL AND wanted_id IS NULL AND dismissed = 0"
+        " AND number NOT IN (SELECT number FROM wanted)"
+        " AND number NOT IN (SELECT number FROM library WHERE number IS NOT NULL)"
+    )
+
+    def pool_pending(self, *, sources: list[str] | None = None, search: str = "", limit: int = 600) -> list[Resource]:
+        sql, params = f"SELECT * FROM resource WHERE {self._PENDING}", []
+        if sources:
+            sql += f" AND source IN ({','.join('?' * len(sources))})"
+            params += sources
+        if search:
+            sql += " AND (title LIKE ? OR number LIKE ?)"
+            params += [f"%{search}%", f"%{search}%"]
+        sql += " ORDER BY crawled_at DESC, id DESC LIMIT ?"
+        params.append(limit)
+        return [Resource.from_row(r) for r in self._all(sql, params)]
+
+    def pool_pending_count(self) -> int:
+        row = self._one(f"SELECT COUNT(DISTINCT number) AS n FROM resource WHERE {self._PENDING}")
+        return row["n"] if row else 0
+
+    def dismiss_numbers(self, numbers: list[str]) -> int:
+        if not numbers:
+            return 0
+        with self._tx() as c:
+            cur = c.execute(
+                f"UPDATE resource SET dismissed = 1 WHERE wanted_id IS NULL AND number IN ({','.join('?' * len(numbers))})",
+                numbers,
+            )
+            return cur.rowcount
+
+    def pool_counts(self, numbers: Iterable[str]) -> dict[str, int]:
+        """番号 (大写) → 磁力池里带磁力的资源数."""
+        return {
+            r["number"].upper(): r["n"]
+            for r in self._in_chunks(
+                "SELECT number, COUNT(*) AS n FROM resource WHERE magnet IS NOT NULL AND number IN ({}) GROUP BY number",
+                numbers,
+            )
+        }
+
+    def owned_numbers(self, numbers: Iterable[str]) -> set[str]:
+        return {r["number"].upper() for r in self._in_chunks("SELECT DISTINCT number FROM library WHERE number IN ({})", numbers)}
+
+    def _in_chunks(self, sql: str, values: Iterable[str]) -> list[sqlite3.Row]:
+        """``IN (...)`` 查询按 500 个一组执行, 避开 SQLite 的参数个数上限."""
+        values = list(dict.fromkeys(v for v in values if v))
+        out: list[sqlite3.Row] = []
+        for i in range(0, len(values), 500):
+            chunk = values[i : i + 500]
+            out += self._all(sql.format(",".join("?" * len(chunk))), chunk)
+        return out
+
+    # --- Amane 缓存 ---
+
+    def works(self, numbers: Iterable[str]) -> dict[str, Work]:
+        """番号 (大写) → Amane 里找到的作品; 没查过或没找到的不在结果里."""
+        rows = self._in_chunks("SELECT * FROM amane_work WHERE found = 1 AND number IN ({})", numbers)
+        return {r["number"].upper(): Work.from_row(r) for r in rows}
+
+    def save_work(self, w: Work) -> None:
+        with self._tx() as c:
+            c.execute(
+                "INSERT INTO amane_work(number, found, title, date, actors, studio, poster, thumb, amane_id, file_count,"
+                " checked_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(number) DO UPDATE SET found=excluded.found,"
+                " title=excluded.title, date=excluded.date, actors=excluded.actors, studio=excluded.studio,"
+                " poster=excluded.poster, thumb=excluded.thumb, amane_id=excluded.amane_id,"
+                " file_count=excluded.file_count, checked_at=excluded.checked_at",
+                (
+                    w.number, int(w.found), w.title, w.date, json.dumps(w.actors, ensure_ascii=False), w.studio,
+                    w.poster, w.thumb, w.amane_id, w.file_count, time.time(),
+                ),
+            )
+
+    def numbers_for_amane(self, refresh_before: float, limit: int) -> list[str]:
+        """需要去 Amane 查的番号: 从没查过或上次查询早于 ``refresh_before`` 的.
+
+        先查下载队列, 再查待确认的磁力池, 最后是作品库 (按发行日期从新到旧).
+        """
+        rows = self._all(
+            "SELECT number, MIN(prio) AS prio, MAX(ord) AS ord FROM ("
+            " SELECT number, 0 AS prio, updated_at AS ord FROM wanted"
+            f" UNION ALL SELECT number, 1, crawled_at FROM resource WHERE {self._PENDING}"
+            " UNION ALL SELECT number, 2, COALESCE(date, '') FROM release"
+            ") AS n WHERE number NOT IN (SELECT number FROM amane_work WHERE checked_at >= ?)"
+            " GROUP BY number COLLATE NOCASE ORDER BY prio, ord DESC LIMIT ?",
+            (refresh_before, limit),
+        )
+        return [r["number"] for r in rows]
+
+    def amane_actor(self, name: str) -> AmaneActor | None:
+        row = self._one("SELECT * FROM amane_actor WHERE name = ?", (name,))
+        return AmaneActor.from_row(row) if row else None
+
+    def save_amane_actor(self, a: AmaneActor) -> None:
+        with self._tx() as c:
+            c.execute(
+                "INSERT INTO amane_actor(name, found, image, profile, amane_id, checked_at) VALUES(?, ?, ?, ?, ?, ?)"
+                " ON CONFLICT(name) DO UPDATE SET found=excluded.found, image=excluded.image, profile=excluded.profile,"
+                " amane_id=excluded.amane_id, checked_at=excluded.checked_at",
+                (a.name, int(a.found), a.image, json.dumps(a.profile, ensure_ascii=False), a.amane_id, time.time()),
+            )
 
     def resource_types(self, forum_id: int) -> list[sqlite3.Row]:
         return self._all(
@@ -539,6 +680,10 @@ class Repo:
         sql += " GROUP BY r.id ORDER BY r.date DESC, r.id DESC LIMIT ?"
         params.append(limit)
         return [(Release.from_row(row), row["subs"] or "", row["wanted_id"], row["wanted_status"]) for row in self._all(sql, params)]
+
+    def releases_by_numbers(self, numbers: Iterable[str]) -> dict[str, Release]:
+        """番号 (大写) → 作品库里的作品."""
+        return {r["number"].upper(): Release.from_row(r) for r in self._in_chunks("SELECT * FROM release WHERE number IN ({})", numbers)}
 
     def release(self, release_id: int) -> Release | None:
         row = self._one("SELECT * FROM release WHERE id = ?", (release_id,))

@@ -4,16 +4,18 @@
 <p class="lead muted" style="margin:0 0 10px"><a href="/actresses">← 女优</a></p>
 {% if message %}<div class="alert"><span>{{ message }}</span></div>{% endif %}
 <div class="card profile">
-  <div class="avatar" {% if g.avatar %}style="background-image:url('{{ g.avatar|img }}')"{% endif %}>{% if not g.avatar %}{{ g.name[:1] }}{% endif %}</div>
+  {% set av = g.avatar|img if g.avatar else (g.amane_avatar|amane_img) %}
+  <div class="avatar" {% if av %}style="background-image:url('{{ av }}')"{% endif %}>{% if not av %}{{ g.name[:1] }}{% endif %}</div>
   <div style="flex:1;min-width:240px">
-    <h1 style="font-size:22px;margin:0">{{ g.name }}</h1>
+    <h1 style="font-size:22px;margin:0;display:flex;gap:10px;align-items:center;flex-wrap:wrap">{{ g.name }}
+      {% if g.amane and g.amane.found %}{% if amane_url and g.amane.amane_id %}<a class="src amane" style="font-size:12px;font-weight:400" href="{{ amane_url }}/actors/{{ g.amane.amane_id }}" target="_blank" rel="noreferrer">在 Amane 中查看</a>{% else %}<span class="src amane" style="font-size:12px;font-weight:400">Amane</span>{% endif %}{% endif %}</h1>
     <div class="metrics">
       <div><b>{{ g.total }}</b><span>作品</span></div>
       <div><b>{{ g.recent }}</b><span>最近 30 天</span></div>
       <div><b>{{ g.upcoming }}</b><span>待发行</span></div>
       <div><b>{{ g.queued }}</b><span>已加入队列</span></div>
     </div>
-    {% if g.profile %}<dl>{% for k, v in g.profile.items() %}<div><dt>{{ k }}</dt><dd>{{ v }}</dd></div>{% endfor %}</dl>{% endif %}
+    {% if g.full_profile %}<dl>{% for k, v in g.full_profile.items() %}<div><dt>{{ k }}</dt><dd>{{ v }}</dd></div>{% endfor %}</dl>{% endif %}
     <div class="scroll"><table style="margin-top:8px">
       {% for s in g.subs %}
       <tr{% if not s.enabled %} class="disabled"{% endif %}>
@@ -42,13 +44,19 @@
   </div>
   <div class="wall covers">
     {% for r, subs_name, wanted_id, wanted_status in items %}
-    <label class="tile{% if wanted_id %} queued{% endif %}">
+    {% set key = r.number|upper %}{% set work = works.get(key) %}{% set img = cover(r, work) %}
+    <label class="tile{% if wanted_id or key in owned_set %} queued{% endif %}">
       <span class="pick"><input type="checkbox" name="ids" value="{{ r.id }}" {% if wanted_id %}disabled{% endif %}></span>
-      <div class="pic" {% if r.cover %}style="background-image:url('{{ r.cover|img }}')"{% endif %}>
+      <div class="pic" {% if img %}style="background-image:url('{{ img }}')"{% endif %}>
         {% if r.date and r.date > today() %}<span class="corner pill soon">待发行</span>{% endif %}</div>
       <div class="body">
         <span class="num">{{ r.number }}</span>
-        <span class="title" title="{{ r.title }}">{{ r.title }}</span>
+        <span class="title" title="{{ r.title }}">{{ r.title or (work.title if work else '') }}</span>
+        {% if key in owned_set or pool.get(key) or work %}<div class="flags">
+          {% if key in owned_set %}<span class="src owned">115 已有</span>{% endif %}
+          {% if pool.get(key) %}<span class="src pool">磁力池 {{ pool[key] }}</span>{% endif %}
+          {% if work %}<span class="src amane">{{ 'Amane 已入库' if work.file_count else 'Amane' }}</span>{% endif %}
+        </div>{% endif %}
         <div class="row">
           <span class="sub">{{ r.date or '-' }} · <a href="{{ r.url }}" target="_blank" rel="noreferrer">{{ SOURCE_LABELS.get(r.source, r.source) }}</a></span>
           {% if wanted_id %}<a href="/wanted/{{ wanted_id }}"><span class="badge s-{{ wanted_status }}">{{ STATUS_LABELS.get(wanted_status, wanted_status) }}</span></a>{% endif %}

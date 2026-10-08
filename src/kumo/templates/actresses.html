@@ -18,7 +18,8 @@
 <div class="wall">
   {% for g in groups %}
   <a class="tile" href="/actresses/{{ g.sub_ids[0] }}">
-    <div class="pic" {% if g.avatar %}style="background-image:url('{{ g.avatar|img }}')"{% endif %}>{% if not g.avatar %}{{ g.name[:1] }}{% endif %}
+    {% set av = g.avatar|img if g.avatar else (g.amane_avatar|amane_img) %}
+    <div class="pic" {% if av %}style="background-image:url('{{ av }}')"{% endif %}>{% if not av %}{{ g.name[:1] }}{% endif %}
       {% if g.recent %}<span class="corner pill" title="最近 30 天发行">+{{ g.recent }}</span>{% endif %}</div>
     <div class="body">
       <span class="name">{{ g.name }}</span>

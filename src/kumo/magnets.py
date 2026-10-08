@@ -12,6 +12,7 @@ import re
 import secrets
 import xml.etree.ElementTree as ET
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from urllib.parse import quote, urlencode, urlsplit
 
 import httpx
@@ -125,38 +126,66 @@ class Sukebei(MagnetSite):
     name = "sukebei"
     base = "https://sukebei.nyaa.si"
 
+    @classmethod
+    def rss_url(cls, *, query: str = "", user: str = "", category: str = "0_0", trusted_only: bool = False) -> str:
+        params = {"page": "rss", "q": query, "c": category or "0_0", "f": "2" if trusted_only else "0"}
+        if user:
+            params["u"] = user
+        return f"{cls.base}/?{urlencode(params)}"
+
     async def search(self, fetcher: Fetcher, number: str) -> list[Candidate]:
-        query = urlencode({"page": "rss", "q": number, "c": "0_0", "f": "0"})
-        status, text = await fetcher.get_text(f"{self.base}/?{query}")
+        status, text = await fetcher.get_text(self.rss_url(query=number))
         if status != 200:
             raise SiteError(f"sukebei 返回 HTTP {status}")
         return parse_sukebei_rss(text)
 
 
-def parse_sukebei_rss(text: str) -> list[Candidate]:
+@dataclass
+class SukebeiItem:
+    id: int
+    """种子编号 (``/view/<id>``)."""
+    candidate: Candidate
+    category: str
+    trusted: bool
+
+
+_NYAA_VIEW = re.compile(r"/view/(\d+)")
+
+
+def parse_sukebei_items(text: str) -> list[SukebeiItem]:
     try:
         root = ET.fromstring(text)
     except ET.ParseError as exc:
         raise SiteError("sukebei 返回的不是 RSS") from exc
-    out: list[Candidate] = []
+    out: list[SukebeiItem] = []
     for item in root.iter("item"):
         title = (item.findtext("title") or "").strip()
         info_hash = (item.findtext("nyaa:infoHash", namespaces=_NYAA_NS) or "").strip().lower()
-        if not title or not re.fullmatch(r"[0-9a-f]{40}", info_hash):
+        view = _NYAA_VIEW.search(item.findtext("guid") or "")
+        if not title or not re.fullmatch(r"[0-9a-f]{40}", info_hash) or not view:
             continue
         seeders = item.findtext("nyaa:seeders", namespaces=_NYAA_NS)
         out.append(
-            Candidate(
-                site="sukebei",
-                title=title,
-                magnet=f"magnet:?xt=urn:btih:{info_hash}&dn={quote(title)}",
-                info_hash=info_hash,
-                size=parse_size(item.findtext("nyaa:size", namespaces=_NYAA_NS) or ""),
-                seeders=int(seeders) if seeders and seeders.isdigit() else None,
-                published=(item.findtext("pubDate") or "").strip() or None,
+            SukebeiItem(
+                id=int(view.group(1)),
+                candidate=Candidate(
+                    site="sukebei",
+                    title=title,
+                    magnet=f"magnet:?xt=urn:btih:{info_hash}&dn={quote(title)}",
+                    info_hash=info_hash,
+                    size=parse_size(item.findtext("nyaa:size", namespaces=_NYAA_NS) or ""),
+                    seeders=int(seeders) if seeders and seeders.isdigit() else None,
+                    published=(item.findtext("pubDate") or "").strip() or None,
+                ),
+                category=(item.findtext("nyaa:category", namespaces=_NYAA_NS) or "").strip(),
+                trusted=(item.findtext("nyaa:trusted", namespaces=_NYAA_NS) or "").strip() == "Yes",
             )
         )
     return out
+
+
+def parse_sukebei_rss(text: str) -> list[Candidate]:
+    return [item.candidate for item in parse_sukebei_items(text)]
 
 
 # --- JavBus: 详情页取 gid / uc / img, 再请求磁力列表 ---

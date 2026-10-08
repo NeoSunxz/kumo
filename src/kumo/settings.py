@@ -33,6 +33,25 @@ class CrawlForum(BaseModel):
     exclude_keywords: list[str] = Field(default_factory=list)
 
 
+class SukebeiRule(BaseModel):
+    """一条 sukebei 爬取规则: 按搜索条件定时读取 RSS, 新磁力进入磁力池; ``auto_download`` 打开后符合条件的直接提交."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    name: str
+    query: str = ""
+    """sukebei 的搜索词, 支持站点自身的语法 (如 ``"中文字幕" | 中字``)."""
+    user: str = ""
+    """只看这个上传者."""
+    category: str = "2_2"
+    """分类: 2_2 Real Life - Videos, 2_0 Real Life, 1_0 Art, 0_0 全部."""
+    trusted_only: bool = False
+    min_seeders: int = Field(default=0, ge=0)
+    auto_download: bool = False
+    include_keywords: list[str] = Field(default_factory=list)
+    exclude_keywords: list[str] = Field(default_factory=list)
+
+
 class Settings(BaseModel):
     model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
 
@@ -78,6 +97,19 @@ class Settings(BaseModel):
     crawl_interval_minutes: float = Field(default=60.0, ge=10)
     crawl_request_delay: float = Field(default=1.5, ge=0.5, le=30)
     """相邻两次请求的间隔 (秒)."""
+
+    # sukebei 爬取: 按规则读取 RSS, 新磁力进入磁力池
+    sukebei_rules: list[SukebeiRule] = Field(default_factory=list)
+    sukebei_interval_minutes: float = Field(default=60.0, ge=10)
+
+    # Amane: 按番号读取海报、封面、演员等作为页面内容; 只读, 不改 Amane
+    amane_url: str = ""
+    """Amane 的地址, 如 ``http://192.168.100.110:8000``; 为空不接入."""
+    amane_token: str = ""
+    """Amane 的 API token (Amane 未设 token 时留空)."""
+    amane_interval_minutes: float = Field(default=30.0, ge=5)
+    amane_refresh_days: float = Field(default=7.0, ge=1)
+    """已查过的番号多久后再查一次 (Amane 里可能刚刮削完)."""
 
     # 订阅 (按女优 / 系列 / 片商等获取新作)
     subs_interval_hours: float = Field(default=12.0, ge=1)

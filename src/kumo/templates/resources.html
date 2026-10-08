@@ -1,18 +1,26 @@
 {% extends "base.html" %}
-{% block title %}爬取 - kumo{% endblock %}
+{% block title %}全部磁力 - kumo{% endblock %}
 {% block content %}
 <div class="page-head">
   <div>
-    <h1>论坛资源</h1>
-    <p class="lead">sehuatang 已爬取的帖子，可按板块 / 分类输出 RSS</p>
+    <h1>磁力池</h1>
+    <div class="flow" style="margin-top:6px"><span class="on">优质磁力</span>→<span>识别番号</span>→<span>确认影片</span>→<span>115 云下载</span></div>
   </div>
-  <div class="actions"><form class="inline" method="post" action="/run/crawl"><button>立即爬取</button></form></div>
+  <div class="actions">
+    <form class="inline" method="post" action="/run/crawl"><button>爬取论坛</button></form>
+    <form class="inline" method="post" action="/run/sukebei"><button>爬取 sukebei</button></form>
+  </div>
+</div>
+<div class="tabs">
+  <a href="/pool">确认影片<b>{{ pool_pending }}</b></a>
+  <a href="/resources" class="on">全部磁力<b>{{ source_counts.values()|sum }}</b></a>
 </div>
 {% if not crawl_enabled %}<div class="alert"><span>论坛爬取未启用，到 <a href="/settings">设置</a> 里打开「启用定时爬取」。</span></div>{% endif %}
 
 <div class="card">
   <div class="filters">
-    <a href="/resources" class="{% if not forum %}on{% endif %}">全部板块</a>
+    <a href="/resources" class="{% if not forum and not source %}on{% endif %}">全部</a>
+    <a href="/resources?source=sukebei" class="{% if source == 'sukebei' %}on{% endif %}">sukebei <b>{{ source_counts.get('sukebei', 0) }}</b></a>
     {% for f in forums %}<a href="/resources?forum={{ f.forum_id }}" class="{% if forum == f.forum_id %}on{% endif %}">{{ f.forum_name or f.forum_id }}（{{ f.forum_id }}）<b>{{ f.n }}</b></a>{% endfor %}
   </div>
   {% if types %}
@@ -24,26 +32,28 @@
   <form method="get" action="/resources" class="bar">
     {% if forum %}<input type="hidden" name="forum" value="{{ forum }}">{% endif %}
     {% if typeid %}<input type="hidden" name="typeid" value="{{ typeid }}">{% endif %}
+    {% if source %}<input type="hidden" name="source" value="{{ source }}">{% endif %}
     <input type="search" name="q" value="{{ q }}" placeholder="搜索标题或番号">
     <label class="check"><input type="checkbox" name="subtitle" value="1" {% if subtitle == '1' %}checked{% endif %}> 只看字幕</label>
     <button>筛选</button>
   </form>
-  <div class="rss-row"><span>当前筛选的 RSS（复制到 Amane「远程发现」订阅）</span>
-    <div class="copy"><code class="break">{{ rss_url }}</code><button type="button" data-copy>复制</button></div></div>
+  {% if source != 'sukebei' %}<div class="rss-row"><span>论坛资源 RSS（当前筛选，复制到 Amane「远程发现」订阅）</span>
+    <div class="copy"><code class="break">{{ rss_url }}</code><button type="button" data-copy>复制</button></div></div>{% endif %}
 </div>
 
 <div class="card flush">
   <div class="scroll"><table>
-    <tr><th>番号</th><th>标题</th><th>分类</th><th class="r">大小</th><th>发表</th><th></th></tr>
+    <tr><th>番号</th><th>标题</th><th>来源</th><th class="r">大小</th><th>发表</th><th></th></tr>
     {% for r in items %}
     <tr>
       <td class="nowrap"><span class="num">{{ r.number or '-' }}</span>{% if r.subtitle %} <span class="tag hl">字幕</span>{% endif %}</td>
       <td class="break small">{{ r.title }}</td>
-      <td class="muted small nowrap">{{ r.type_name }}</td>
+      <td class="muted small nowrap">{{ r.source }} · {{ r.type_name }}{% if r.seeders is not none %} <span title="做种">↑{{ r.seeders }}</span>{% endif %}</td>
       <td class="r nowrap">{{ r.size|size }}</td>
       <td class="muted small nowrap">{{ (r.posted or '')[:10] }}</td>
       <td class="r nowrap">
         {% if r.wanted_id %}<a href="/wanted/{{ r.wanted_id }}">已加入</a>
+        {% elif r.dismissed %}<span class="faint small">已忽略</span>
         {% elif r.magnet and r.number %}<form method="post" action="/resources/{{ r.id }}/download"><button class="sm">下载</button></form>
         {% elif not r.magnet %}<span class="faint small">无磁力</span>
         {% else %}<span class="faint small">无番号</span>{% endif %}

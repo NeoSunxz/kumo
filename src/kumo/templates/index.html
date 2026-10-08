@@ -4,13 +4,13 @@
 <div class="page-head">
   <div>
     <h1>下载队列</h1>
-    <p class="lead">番号 → 搜磁力 → 自动选择 → 提交 115 云下载</p>
+    <p class="lead">片源与磁力两条路径在这里汇合：搜磁力 → 选择磁力 → 提交 115 云下载</p>
   </div>
   <div class="actions">
     <details class="menu">
       <summary class="btn">立即执行 ▾</summary>
       <div>
-        {% for job, label in [("search","搜索磁力"),("submit","提交云下载"),("tasks","刷新下载进度"),("sync","同步 115 目录"),("feeds","读取 RSS"),("crawl","爬取论坛")] %}
+        {% for job, label in [("search","搜索磁力"),("submit","提交云下载"),("tasks","刷新下载进度"),("sync","同步 115 目录"),("feeds","读取 RSS"),("crawl","爬取论坛"),("sukebei","爬取 sukebei"),("amane","同步 Amane")] %}
         <form method="post" action="/run/{{ job }}"><button>{{ label }}</button></form>
         {% endfor %}
       </div>
@@ -48,7 +48,8 @@
     <tr><th>番号</th><th>状态</th><th>说明</th><th>来源</th><th class="r">更新</th></tr>
     {% for w in items %}
     <tr>
-      <td><a class="num" href="/wanted/{{ w.id }}">{{ w.number }}</a></td>
+      {% set work = works.get(w.number|upper) %}
+      <td><a class="num" href="/wanted/{{ w.id }}">{{ w.number }}</a>{% if work %}<div class="faint small" style="max-width:280px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="{{ work.title }}">{{ work.actors[:2]|join('、') }}{% if work.actors %} · {% endif %}{{ work.title }}</div>{% endif %}</td>
       <td class="nowrap"><span class="badge s-{{ w.status.value }}">{{ STATUS_LABELS[w.status] }}{% if w.status.value == 'downloading' %} {{ w.percent|round|int }}%{% endif %}</span>
         {%- if w.status.value == 'downloading' %}<span class="progress"><i style="width:{{ w.percent|round|int }}%"></i></span>{% endif %}</td>
       <td class="muted small">{{ w.note }}</td>

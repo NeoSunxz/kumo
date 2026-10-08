@@ -31,11 +31,11 @@ from .pan115 import DeviceAuth, Pan115Error
 from .sehuatang import Sehuatang
 from .subscriptions import KIND_LABELS, SOURCE_LABELS
 from .service import Service
-from .settings import CrawlForum, Env, InputFeed, Settings
+from .settings import CrawlForum, Env, InputFeed, Settings, SukebeiRule
 
 JOB_LABELS = {
     "search": "搜索磁力", "submit": "提交云下载", "tasks": "刷新下载进度", "sync": "同步 115 目录",
-    "feeds": "读取 RSS", "crawl": "论坛爬取", "subs": "检查订阅",
+    "feeds": "读取 RSS", "crawl": "论坛爬取", "subs": "检查订阅", "sukebei": "sukebei 爬取", "amane": "同步 Amane",
 }
 
 #: 搜索番号时可选的磁力来源; sehuatang 查的是本地已爬取的资源库.
@@ -46,6 +46,20 @@ _TEMPLATES.env.filters["size"] = format_size
 _TEMPLATES.env.filters["ts"] = lambda t: datetime.fromtimestamp(t).strftime("%m-%d %H:%M") if t else "-"
 # 资料站图片经 kumo 代理 (JavBus 校验 Referer, 直接引用会 403).
 _TEMPLATES.env.filters["img"] = lambda url: f"/img?u={quote(url, safe='')}" if url else ""
+# Amane 的海报 / 封面 / 演员图, 由 kumo 带 token 去 Amane 取.
+_TEMPLATES.env.filters["amane_img"] = lambda url: f"/img/amane?u={quote(url, safe='')}" if url else ""
+
+
+def _cover(release: Any = None, work: Any = None) -> str:
+    """作品封面 (横图): 资料站封面优先, 没有时用 Amane 的封面或海报."""
+    if release is not None and release.cover:
+        return f"/img?u={quote(release.cover, safe='')}"
+    if work is not None and (work.thumb or work.poster):
+        return f"/img/amane?u={quote(work.thumb or work.poster, safe='')}"
+    return ""
+
+
+_TEMPLATES.env.globals["cover"] = _cover
 _TEMPLATES.env.globals["today"] = lambda: datetime.now().strftime("%Y-%m-%d")
 _TEMPLATES.env.globals.update(
     STATUS_LABELS=STATUS_LABELS, TAG_LABELS=TAG_LABELS, KIND_LABELS=KIND_LABELS, SOURCE_LABELS=SOURCE_LABELS,
@@ -95,6 +109,8 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
         ctx.setdefault("errors", {JOB_LABELS.get(k, k): v for k, v in s.last_error.items()})
         ctx.setdefault("running", [JOB_LABELS.get(k, k) for k in s.running])
         ctx.setdefault("flash", request.query_params.get("flash", ""))
+        ctx.setdefault("pool_pending", s.repo.pool_pending_count())
+        ctx.setdefault("amane_url", s.settings.amane_url.rstrip("/"))
         return _TEMPLATES.TemplateResponse(request, name, ctx)
 
     def back(url: str) -> RedirectResponse:
@@ -106,10 +122,12 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
     async def index(request: Request, status: str = "", q: str = "") -> HTMLResponse:
         repo = svc(request).repo
         statuses = [WantedStatus(status)] if status in WantedStatus._value2member_map_ else None
+        items = repo.list_wanted(statuses, search=q.strip())
         return page(
             request,
             "index.html",
-            items=repo.list_wanted(statuses, search=q.strip()),
+            items=items,
+            works=repo.works(w.number for w in items),
             counts=repo.status_counts(),
             status=status,
             q=q,
@@ -128,7 +146,11 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
         wanted = repo.wanted(wanted_id)
         if wanted is None:
             raise HTTPException(404)
-        return page(request, "wanted.html", w=wanted, candidates=repo.candidates(wanted_id), owned=repo.owned(wanted.number))
+        key = wanted.number.upper()
+        return page(
+            request, "wanted.html", w=wanted, candidates=repo.candidates(wanted_id), owned=repo.owned(wanted.number),
+            work=repo.works([key]).get(key), release=repo.releases_by_numbers([key]).get(key),
+        )
 
     @app.post("/wanted/{wanted_id}/choose/{candidate_id}")
     async def choose(request: Request, wanted_id: int, candidate_id: int) -> RedirectResponse:
@@ -195,7 +217,7 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
                 )
             )
         def keywords(text: str) -> list[str]:
-            return [k.strip() for k in text.split(",") if k.strip()]
+            return [k.strip() for k in re.split(r"[,，]", text) if k.strip()]
 
         try:
             forums = []
@@ -214,6 +236,8 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
                         exclude_keywords=keywords(parts[4]),
                     )
                 )
+            rules = [_parse_sukebei_rule(line) for line in lines("sukebei_rules")]
+            current = svc(request).settings
             settings = Settings(
                 app_id=data.get("app_id", ""),
                 download_path=data.get("download_path", ""),
@@ -247,6 +271,12 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
                 subs_interval_hours=float(data.get("subs_interval_hours") or 12),
                 subs_pages=int(data.get("subs_pages") or 1),
                 subs_initial_pages=int(data.get("subs_initial_pages") or 3),
+                sukebei_rules=rules,
+                sukebei_interval_minutes=float(data.get("sukebei_interval_minutes") or 60),
+                amane_url=data.get("amane_url", "").rstrip("/"),
+                amane_token="" if "clear_amane_token" in data else (data.get("amane_token") or current.amane_token),
+                amane_interval_minutes=float(data.get("amane_interval_minutes") or 30),
+                amane_refresh_days=float(data.get("amane_refresh_days") or 7),
             )
         except (ValidationError, ValueError) as exc:
             return page(request, "settings.html", s=svc(request).settings, sites=SEARCH_SOURCES, message=f"保存失败: {exc}")
@@ -315,9 +345,12 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
 
     @app.get("/resources", response_class=HTMLResponse)
     async def resources(
-        request: Request, q: str = "", forum: int | None = None, typeid: int | None = None, subtitle: str = ""
+        request: Request, q: str = "", forum: int | None = None, typeid: int | None = None, subtitle: str = "", source: str = ""
     ) -> HTMLResponse:
         repo = svc(request).repo
+        sources = [source] if source in ("sehuatang", "sukebei") else None
+        if forum or typeid:
+            sources = ["sehuatang"]
         params = {k: v for k, v in (("fid", forum), ("typeid", typeid), ("subtitle", subtitle), ("q", q.strip())) if v}
         rss_url = str(request.base_url) + "rss/sehuatang.xml" + ("?" + urlencode(params) if params else "")
         if env.password:
@@ -327,11 +360,14 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
             "resources.html",
             items=repo.resources(
                 search=q.strip(),
+                sources=sources,
                 forum_ids=[forum] if forum else None,
                 type_ids=[typeid] if typeid else None,
                 subtitle=True if subtitle == "1" else None,
             ),
             forums=repo.resource_forums(),
+            source_counts=repo.resource_sources(),
+            source=source if sources and not forum else "",
             types=repo.resource_types(forum) if forum else [],
             q=q,
             forum=forum,
@@ -340,6 +376,37 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
             rss_url=rss_url,
             crawl_enabled=svc(request).settings.crawl_enabled,
         )
+
+    @app.get("/pool", response_class=HTMLResponse)
+    async def pool(request: Request, q: str = "", source: str = "") -> HTMLResponse:
+        s = svc(request)
+        sources = [source] if source in ("sehuatang", "sukebei") else None
+        return page(
+            request, "pool.html", groups=s.pool_groups(sources=sources, search=q.strip()), q=q, source=source if sources else "",
+            source_counts=s.repo.resource_sources(), settings=s.settings,
+        )
+
+    @app.post("/pool/{action}")
+    async def pool_action(request: Request, action: str) -> RedirectResponse:
+        """确认或忽略: ``only`` 指定单个番号 (卡片上的按钮), 否则处理勾选的番号."""
+        form = await request.form()
+        only = str(form.get("only") or "")
+        numbers = [only] if only else [str(v) for v in form.getlist("ids")]
+        s = svc(request)
+        if action == "confirm":
+            picks = [int(v) for n in numbers if str(v := form.get(f"pick_{n}") or "").isdigit()]
+            done = s.confirm_pool(picks)
+            if done:
+                asyncio.create_task(s.run_guarded("submit", s.run_submit))
+            flash = f"已加入下载队列 {done} 部"
+        elif action == "dismiss":
+            s.repo.dismiss_numbers(numbers)
+            flash = f"已忽略 {len(numbers)} 部"
+        else:
+            raise HTTPException(400, "未知操作")
+        referer = urlsplit(request.headers.get("referer") or "/pool")
+        query = [(k, v) for k, v in parse_qsl(referer.query) if k != "flash"] + [("flash", flash)]
+        return back(f"/pool?{urlencode(query)}")
 
     @app.post("/resources/{resource_id}/download")
     async def download_resource(request: Request, resource_id: int) -> RedirectResponse:
@@ -418,10 +485,12 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
         rss_url = str(request.base_url) + "rss/releases.xml" + ("?" + urlencode(params) if params else "")
         if env.password:
             rss_url += ("&" if params else "?") + "key=<密码>"
+        items = s.repo.releases(sub_ids=sub_ids, kinds=kinds, search=q.strip(), days=days, not_queued=todo == "1", limit=300)
         return page(
             request,
             "releases.html",
-            items=s.repo.releases(sub_ids=sub_ids, kinds=kinds, search=q.strip(), days=days, not_queued=todo == "1", limit=300),
+            items=items,
+            **_shared(s, [r.number for r, *_ in items]),
             subs=s.repo.subscriptions(),
             sub=sub,
             kind=kind,
@@ -462,7 +531,10 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
             raise HTTPException(404)
         items = s.repo.releases(sub_ids=group.sub_ids, not_queued=todo == "1", limit=2000)
         rss_url = f"{request.base_url}rss/releases.xml?sub={','.join(map(str, group.sub_ids))}"
-        return page(request, "actress.html", g=group, items=items, todo=todo, message=message, rss_url=rss_url)
+        return page(
+            request, "actress.html", g=group, items=items, todo=todo, message=message, rss_url=rss_url,
+            **_shared(s, [r.number for r, *_ in items]),
+        )
 
     @app.get("/img")
     async def image(request: Request, u: str) -> Response:
@@ -470,6 +542,19 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
             path = await request.app.state.images.get(u, proxy=svc(request).settings.scrape_proxy)
         except ImageError as exc:
             raise HTTPException(404, str(exc)) from exc
+        return FileResponse(path, headers={"Cache-Control": "public, max-age=2592000"})
+
+    @app.get("/img/amane")
+    async def amane_image(request: Request, u: str) -> Response:
+        amane = svc(request).amane()
+        if amane is None:
+            raise HTTPException(404, "未接入 Amane")
+        try:
+            path = await request.app.state.images.get_amane(u, amane)
+        except ImageError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        finally:
+            await amane.aclose()
         return FileResponse(path, headers={"Cache-Control": "public, max-age=2592000"})
 
     @app.get("/rss/releases.xml")
@@ -492,6 +577,7 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
         jobs = {
             "search": s.run_search, "submit": s.run_submit, "tasks": s.run_tasks, "sync": s.run_sync,
             "feeds": s.run_feeds, "crawl": lambda: s.run_crawl(force=True), "subs": lambda: s.run_subscriptions(force=True),
+            "sukebei": lambda: s.run_sukebei(force=True), "amane": s.run_amane,
         }
         if job not in jobs:
             raise HTTPException(404)
@@ -541,6 +627,7 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
         s = svc(request)
         items = s.repo.resources(
             search=q.strip(),
+            sources=["sehuatang"],
             forum_ids=forum_ids,
             type_ids=type_ids,
             subtitle=True if subtitle == "1" else None,
@@ -558,6 +645,64 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
         return {"status": "ok"}
 
     return app
+
+
+def _shared(s: Service, numbers: list[str]) -> dict[str, Any]:
+    """片源页面用到的、按番号与磁力那边共享的数据: Amane 作品、磁力池数量、115 是否已有."""
+    return {
+        "works": s.repo.works(numbers),
+        "pool": s.repo.pool_counts(numbers),
+        "owned_set": s.repo.owned_numbers(numbers),
+    }
+
+
+_RULE_SEEDERS = re.compile(r"(?:做种|seed(?:ers)?)\s*(?:>=|≥|:|：)?\s*(\d+)", re.I)
+
+
+def _parse_sukebei_rule(line: str) -> SukebeiRule:
+    """``名称 | 搜索词 | 选项``; 选项用空格分隔: 自动、可信、做种>=N、上传者:名字、分类:2_2、+包含词、-排除词."""
+    parts = [p.strip() for p in line.split("|")]
+    if not parts[0]:
+        raise ValueError(f"sukebei 规则要有名称: {line}")
+    rule: dict[str, Any] = {"name": parts[0], "query": parts[1] if len(parts) > 1 else "", "include_keywords": [], "exclude_keywords": []}
+    for opt in (parts[2] if len(parts) > 2 else "").split():
+        key, sep, value = opt.replace("：", ":").partition(":")
+        if opt in ("自动", "auto"):
+            rule["auto_download"] = True
+        elif opt in ("可信", "trusted"):
+            rule["trusted_only"] = True
+        elif m := _RULE_SEEDERS.fullmatch(opt):
+            rule["min_seeders"] = int(m.group(1))
+        elif sep and key in ("上传者", "user", "u"):
+            rule["user"] = value
+        elif sep and key in ("分类", "category", "c"):
+            rule["category"] = value
+        elif opt.startswith("+") and len(opt) > 1:
+            rule["include_keywords"].append(opt[1:])
+        elif opt.startswith("-") and len(opt) > 1:
+            rule["exclude_keywords"].append(opt[1:])
+        else:
+            raise ValueError(f"sukebei 规则「{parts[0]}」有无法识别的选项: {opt}")
+    return SukebeiRule(**rule)
+
+
+def format_sukebei_rule(rule: SukebeiRule) -> str:
+    opts = []
+    if rule.auto_download:
+        opts.append("自动")
+    if rule.trusted_only:
+        opts.append("可信")
+    if rule.min_seeders:
+        opts.append(f"做种>={rule.min_seeders}")
+    if rule.user:
+        opts.append(f"上传者:{rule.user}")
+    if rule.category != "2_2":
+        opts.append(f"分类:{rule.category}")
+    opts += [f"+{k}" for k in rule.include_keywords] + [f"-{k}" for k in rule.exclude_keywords]
+    return " | ".join(x for x in (rule.name, rule.query, " ".join(opts)) if x is not None).rstrip(" |")
+
+
+_TEMPLATES.env.filters["sukebei_rule"] = format_sukebei_rule
 
 
 def _int_list(text: str) -> list[int]:

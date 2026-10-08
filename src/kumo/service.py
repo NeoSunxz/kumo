@@ -1,5 +1,13 @@
 """调度与业务流程.
 
+kumo 有两条找片的路径, 汇合到同一个下载队列:
+
+- 片源: 订阅资料站 (女优 / 系列 / 片商 / 标签) 得到作品 → 加入队列后按番号搜磁力 → 选择磁力 → 115.
+- 磁力: 论坛与 sukebei 按规则爬取磁力进入磁力池 → 识别番号 → 确认影片 (或按来源自动) → 115.
+
+两边按番号共享数据: 磁力池同时是搜磁力的来源之一, 作品信息 (海报、封面、演员) 从 Amane 按番号缓存,
+两边页面都用它填充.
+
 一个番号的生命周期: pending → (搜索) → queued / need_choice / no_magnet → (提交) → submitted
 → downloading → done / failed. 任何阶段只要 115 目录同步发现已有该番号, 未提交的条目转为 owned.
 
@@ -18,22 +26,26 @@ from datetime import date, timedelta
 
 import httpx
 
+from .amane import Amane, AmaneError
 from .db import Repo
 from .feeds import parse_feed, torrent_to_magnet
-from .magnets import SITES, Fetcher, SiteError
-from .models import Candidate, LibraryFile, Release, Resource, Subscription, Tag, Wanted, WantedStatus, info_hash_of
+from .magnets import SITES, Fetcher, SiteError, Sukebei, parse_sukebei_items
+from .models import (
+    AmaneActor, Candidate, LibraryFile, Release, Resource, Subscription, Tag, Wanted, WantedStatus, Work, info_hash_of,
+)
 from .numbers import extract_number, has_subtitle_suffix
 from .pan115 import FakePan115, NotAuthorized, OpenClient, Pan115, Pan115Error
 from .sehuatang import Sehuatang
 from .subscriptions import SubscriptionKey, fetch_list, parse_subscription_url
-from .select import choose, evaluate, merge
-from .settings import CrawlForum, Settings
+from .select import choose, detect_tags, evaluate, merge
+from .settings import CrawlForum, Settings, SukebeiRule
 
 log = logging.getLogger("kumo")
 
 VIDEO_EXTS = frozenset({".mp4", ".mkv", ".avi", ".wmv", ".mov", ".ts", ".m2ts", ".iso", ".rmvb", ".flv", ".webm", ".m4v", ".mpg", ".mpeg"})
 _TICK = 30.0
 _SEARCH_PER_TICK = 5
+_AMANE_PER_RUN = 200
 
 
 class Service:
@@ -43,7 +55,7 @@ class Service:
         self._client: Pan115 | None = None
         self._client_app_id: str | None = None
         self._folder_ids: dict[str, str] = {}
-        self._locks = {name: asyncio.Lock() for name in ("search", "submit", "tasks", "sync", "feeds", "crawl", "subs")}
+        self._locks = {name: asyncio.Lock() for name in ("search", "submit", "tasks", "sync", "feeds", "crawl", "subs", "sukebei", "amane")}
         self._last_run: dict[str, float] = {}
         self._sync_requested = False
         self._task: asyncio.Task[None] | None = None
@@ -73,6 +85,10 @@ class Service:
         if path not in self._folder_ids:
             self._folder_ids[path] = await client.folder_id(path)
         return self._folder_ids[path]
+
+    def amane(self) -> Amane | None:
+        s = self.settings
+        return Amane(s.amane_url, s.amane_token) if s.amane_url else None
 
     # --- 番号 ---
 
@@ -269,6 +285,7 @@ class Service:
             name=subs[0].name,
             subs=subs,
             avatar=next((s.avatar for s in subs if s.avatar), None),
+            amane=self.repo.amane_actor(subs[0].name),
             profile=profile,
             total=len(rows),
             latest=rows[0][0] if rows else None,
@@ -282,6 +299,39 @@ class Service:
         numbers = [r.number for r in (self.repo.release(i) for i in release_ids) if r is not None]
         added, _ = self.add_numbers(numbers, source="新作")
         return added
+
+    # --- 磁力池: 确认影片 ---
+
+    def pool_groups(self, *, sources: list[str] | None = None, search: str = "") -> list[PoolGroup]:
+        """待确认的磁力按番号分组; 每组的磁力按选择规则打分, 默认选最高分的."""
+        s = self.settings
+        groups: dict[str, list[Resource]] = {}
+        for r in self.repo.pool_pending(sources=sources, search=search):
+            assert r.number
+            groups.setdefault(r.number.upper(), []).append(r)
+        works = self.repo.works(groups)
+        releases = self.repo.releases_by_numbers(groups)
+        out = []
+        for key, resources in groups.items():
+            scored = []
+            for r in resources:
+                cand = _resource_candidate(r)
+                evaluate(cand, key, s)
+                scored.append(PooledMagnet(resource=r, tags=cand.tags, score=cand.score, rejected=cand.rejected))
+            scored.sort(key=lambda m: (not m.rejected, m.score, m.resource.seeders or 0), reverse=True)
+            out.append(PoolGroup(number=resources[0].number or key, magnets=scored, work=works.get(key), release=releases.get(key)))
+        return out
+
+    def confirm_pool(self, picks: list[int]) -> int:
+        """确认影片: 用选中的磁力 (资源编号) 加入下载队列; 返回处理的数量."""
+        done = 0
+        for resource_id in picks:
+            try:
+                self.download_resource(resource_id)
+                done += 1
+            except ValueError as exc:
+                self.repo.log("warning", f"确认影片失败 (资源 {resource_id}): {exc}")
+        return done
 
     # --- 定时任务 ---
 
@@ -459,6 +509,80 @@ class Service:
                 if new_total:
                     self.repo.log("info", f"sehuatang 爬取: 新帖 {new_total} 个, 自动下载 {queued} 个")
 
+    async def run_sukebei(self, *, force: bool = False) -> None:
+        """按规则读取 sukebei 的 RSS, 新磁力进入磁力池; 规则开了自动下载的, 符合选择规则的直接提交."""
+        async with self._locks["sukebei"]:
+            s = self.settings
+            if not s.sukebei_rules:
+                if force:
+                    raise SiteError("没有配置 sukebei 爬取规则, 请在设置 → 磁力 → sukebei 里填写")
+                return
+            fetcher = Fetcher(proxy=s.scrape_proxy, flaresolverr_url=s.flaresolverr_url)
+            new_total = queued = 0
+            try:
+                for i, rule in enumerate(s.sukebei_rules):
+                    if i:
+                        await asyncio.sleep(s.crawl_request_delay)
+                    url = Sukebei.rss_url(query=rule.query, user=rule.user, category=rule.category, trusted_only=rule.trusted_only)
+                    try:
+                        status, text = await fetcher.get_text(url)
+                        if status != 200:
+                            raise SiteError(f"HTTP {status}")
+                        items = parse_sukebei_items(text)
+                    except SiteError as exc:
+                        self.repo.log("warning", f"sukebei 规则 {rule.name} 读取失败: {exc}")
+                        continue
+                    for item in items:
+                        cand = item.candidate
+                        if not _rule_accepts(rule, item.trusted, cand) or self.repo.resource_exists("sukebei", item.id):
+                            continue
+                        number = extract_number(cand.title)
+                        res = self.repo.add_resource(
+                            Resource(
+                                source="sukebei", tid=item.id, forum_id=0, forum_name="sukebei", type_name=rule.name,
+                                title=cand.title, number=number, magnet=cand.magnet, info_hash=cand.info_hash,
+                                size=cand.size, posted=cand.published, seeders=cand.seeders,
+                                subtitle=bool(number and (Tag.SUBTITLE in detect_tags(cand, number))),
+                            )
+                        )
+                        new_total += 1
+                        if rule.auto_download and number and res.id:
+                            evaluate(cand, number, s)
+                            if not cand.rejected:
+                                self.download_resource(res.id)
+                                queued += 1
+            finally:
+                await fetcher.aclose()
+                if new_total:
+                    self.repo.log("info", f"sukebei 爬取: 新磁力 {new_total} 个, 自动下载 {queued} 个")
+
+    async def run_amane(self) -> None:
+        """按番号把 Amane 里的作品信息 (海报、封面、演员) 缓存下来, 订阅的女优按名称缓存头像与资料."""
+        async with self._locks["amane"]:
+            s = self.settings
+            amane = self.amane()
+            if amane is None:
+                return
+            refresh_before = time.time() - s.amane_refresh_days * 86400
+            found = 0
+            try:
+                for number in self.repo.numbers_for_amane(refresh_before, _AMANE_PER_RUN):
+                    work = await amane.work(number)
+                    self.repo.save_work(work)
+                    found += work.found
+                names = {sub.name for sub in self.repo.subscriptions(kind="star")}
+                for name in sorted(names):
+                    cached = self.repo.amane_actor(name)
+                    if cached and cached.checked_at >= refresh_before:
+                        continue
+                    self.repo.save_amane_actor(await amane.actor(name))
+            except AmaneError as exc:
+                raise SiteError(f"Amane: {exc}") from exc
+            finally:
+                await amane.aclose()
+            if found:
+                self.repo.log("info", f"Amane: 取到 {found} 部作品的信息")
+
     # --- 调度循环 ---
 
     def start(self) -> None:
@@ -482,6 +606,8 @@ class Service:
             ("crawl", s.crawl_interval_minutes * 60, self.run_crawl),
             # 订阅各自记录检查时间, 这里每 10 分钟看一次是否有到期的.
             ("subs", 600, self.run_subscriptions),
+            ("sukebei", s.sukebei_interval_minutes * 60, self.run_sukebei),
+            ("amane", s.amane_interval_minutes * 60, self.run_amane),
             ("search", 0, self.run_search),
             ("submit", 0, self.run_submit),
             ("tasks", s.task_poll_minutes * 60, self.run_tasks),
@@ -533,10 +659,54 @@ class ActressGroup:
     """已公布未发行的作品数 (JavDB 会列出)."""
     queued: int = 0
     """已加入下载队列的作品数."""
+    amane: AmaneActor | None = None
+    """Amane 里的同名演员; 资料站没有头像或资料时用它补."""
+
+    @property
+    def amane_avatar(self) -> str | None:
+        """资料站没有头像时用 Amane 的."""
+        if self.avatar or self.amane is None or not self.amane.found:
+            return None
+        return self.amane.image
+
+    @property
+    def full_profile(self) -> dict[str, str]:
+        out = dict(self.profile)
+        if self.amane and self.amane.found:
+            out.update({k: v for k, v in self.amane.profile.items() if k not in out})
+        return out
 
     @property
     def sub_ids(self) -> list[int]:
         return [s.id for s in self.subs if s.id]
+
+
+@dataclass
+class PooledMagnet:
+    resource: Resource
+    tags: set[str]
+    score: float
+    rejected: str
+
+
+@dataclass
+class PoolGroup:
+    """「确认影片」的一张卡片: 一个番号, 磁力池里它的磁力, 以及两边共享的作品信息."""
+
+    number: str
+    magnets: list[PooledMagnet]
+    work: Work | None = None
+    """Amane 里的作品 (海报、封面、演员)."""
+    release: Release | None = None
+    """订阅里见过的同番号作品."""
+
+    @property
+    def title(self) -> str:
+        return (self.work.title if self.work else "") or (self.release.title if self.release else "")
+
+    @property
+    def best(self) -> PooledMagnet:
+        return self.magnets[0]
 
 
 def _name_key(name: str) -> str:
@@ -547,8 +717,20 @@ def _resource_candidate(r: Resource) -> Candidate:
     assert r.magnet and r.info_hash
     return Candidate(
         site=r.source, title=r.title, magnet=r.magnet, info_hash=r.info_hash, size=r.size, published=r.posted,
-        tags={Tag.SUBTITLE} if r.subtitle else set(),
+        seeders=r.seeders, tags={Tag.SUBTITLE} if r.subtitle else set(),
     )
+
+
+def _rule_accepts(rule: SukebeiRule, trusted: bool, cand: Candidate) -> bool:
+    """sukebei 规则的入池条件: 只要可信、最少做种、包含词、排除词."""
+    if rule.trusted_only and not trusted:
+        return False
+    if rule.min_seeders and (cand.seeders or 0) < rule.min_seeders:
+        return False
+    lowered = cand.title.lower()
+    if rule.include_keywords and not any(k.lower() in lowered for k in rule.include_keywords):
+        return False
+    return not any(k.lower() in lowered for k in rule.exclude_keywords)
 
 
 def _accepts(forum: CrawlForum, r: Resource) -> bool:

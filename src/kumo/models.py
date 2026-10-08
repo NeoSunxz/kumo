@@ -137,7 +137,10 @@ class LibraryFile:
 
 @dataclass
 class Resource:
-    """论坛爬到的一个帖子 (一条可下载的资源)."""
+    """磁力池的一条: 论坛帖子或 sukebei 种子.
+
+    sukebei 的 ``tid`` 是种子编号, ``forum_id`` 固定为 0, ``type_name`` 是命中的规则名.
+    """
 
     source: str
     tid: int
@@ -152,7 +155,10 @@ class Resource:
     size: int | None = None
     posted: str | None = None
     subtitle: bool = False
+    seeders: int | None = None
     wanted_id: int | None = None
+    dismissed: bool = False
+    """在「确认影片」里被忽略; 不再出现在待确认列表."""
     crawled_at: float = 0.0
     id: int | None = None
 
@@ -160,6 +166,52 @@ class Resource:
     def from_row(cls, row: sqlite3.Row) -> Resource:
         data = dict(row)
         data["subtitle"] = bool(data["subtitle"])
+        data["dismissed"] = bool(data.get("dismissed"))
+        return cls(**data)
+
+
+@dataclass
+class Work:
+    """按番号缓存的作品信息, 取自 Amane (海报、封面、演员); 片源与磁力两边共用."""
+
+    number: str
+    found: bool
+    """Amane 里有没有这个番号; 没有时其余字段为空, 过一段时间再查."""
+    title: str = ""
+    date: str | None = None
+    actors: list[str] = field(default_factory=list)
+    studio: str = ""
+    poster: str | None = None
+    thumb: str | None = None
+    amane_id: int | None = None
+    file_count: int = 0
+    """Amane 媒体库里关联的文件数; 大于 0 表示已入库."""
+    checked_at: float = 0.0
+
+    @classmethod
+    def from_row(cls, row: sqlite3.Row) -> Work:
+        data = dict(row)
+        data["found"] = bool(data["found"])
+        data["actors"] = json.loads(data["actors"] or "[]")
+        return cls(**data)
+
+
+@dataclass
+class AmaneActor:
+    """按名称缓存的 Amane 演员: 头像与资料, 用来填充女优页."""
+
+    name: str
+    found: bool
+    image: str | None = None
+    profile: dict[str, str] = field(default_factory=dict)
+    amane_id: int | None = None
+    checked_at: float = 0.0
+
+    @classmethod
+    def from_row(cls, row: sqlite3.Row) -> AmaneActor:
+        data = dict(row)
+        data["found"] = bool(data["found"])
+        data["profile"] = json.loads(data["profile"] or "{}")
         return cls(**data)
 
 

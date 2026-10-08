@@ -46,6 +46,8 @@ code { font-family: var(--mono); font-size: 12.5px; }
 .nav a { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border-radius: var(--radius-sm); color: var(--muted); }
 .nav a:hover { background: var(--surface-2); color: var(--fg); text-decoration: none; }
 .nav a.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.nav .count-pill { margin-left: auto; font-size: 11px; font-family: var(--mono); font-weight: 600; padding: 0 7px; border-radius: 999px;
+  background: var(--warn); color: #fff; }
 .nav svg { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: none; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .side-foot { margin-top: auto; padding: 14px 10px 0; font-size: 12px; display: flex; flex-direction: column; gap: 6px; }
 .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--faint); margin-right: 6px; vertical-align: 1px; }
@@ -251,6 +253,49 @@ label.tile.queued .pick { display: none; }
 .steps li { counter-increment: step; display: flex; gap: 10px; align-items: baseline; color: var(--muted); }
 .steps li::before { content: counter(step); flex: none; width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center;
   font-size: 11px; font-weight: 700; background: var(--accent-soft); color: var(--accent); }
+/* 来源角标: 片源 / 磁力 / Amane */
+.src { font-size: 11px; padding: 0 6px; border-radius: 5px; white-space: nowrap; border: 1px solid; }
+.src.amane { color: #8a4fbf; border-color: color-mix(in srgb, #8a4fbf 35%, transparent); background: color-mix(in srgb, #8a4fbf 9%, transparent); }
+.src.pool { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 35%, transparent); background: color-mix(in srgb, var(--warn) 9%, transparent); }
+.src.owned { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 35%, transparent); background: color-mix(in srgb, var(--ok) 9%, transparent); }
+@media (prefers-color-scheme: dark) { .src.amane { color: #c39be8; } }
+.tile .flags { display: flex; gap: 4px; flex-wrap: wrap; }
+
+/* 磁力池: 确认影片 */
+.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); margin-bottom: 16px; }
+.tabs a { padding: 8px 14px; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.tabs a:hover { color: var(--fg); text-decoration: none; }
+.tabs a.on { color: var(--fg); border-bottom-color: var(--accent); font-weight: 600; }
+.tabs a b { font-family: var(--mono); font-size: 11.5px; margin-left: 4px; color: var(--faint); }
+.flow { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+.flow span { padding: 2px 9px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--line); }
+.flow span.on { background: var(--accent-soft); color: var(--accent); border-color: color-mix(in srgb, var(--accent) 30%, transparent); font-weight: 600; }
+.pick-card { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 0; padding: 0; overflow: hidden; }
+.pick-card .poster { position: relative; background: var(--surface-2) center / cover no-repeat; min-height: 150px; display: grid; place-items: center;
+  color: var(--faint); font-family: var(--mono); font-size: 13px; border-right: 1px solid var(--line); }
+.pick-card .poster .sel { position: absolute; top: 10px; left: 10px; width: 24px; height: 24px; border-radius: 6px; display: grid; place-items: center;
+  background: rgba(255,255,255,.92); box-shadow: 0 1px 4px rgba(0,0,0,.25); }
+.pick-card:has(.sel input:checked) { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
+.pick-card .main { padding: 14px 16px; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.pick-card .head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.pick-card .head .num { font-size: 16px; }
+.pick-card .wtitle { color: var(--muted); font-size: 13px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.magnets { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: var(--radius-sm); overflow: hidden; }
+.magnets label { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 10px; align-items: center; margin: 0; padding: 7px 10px; cursor: pointer;
+  border-bottom: 1px solid var(--line); font-size: 12.5px; }
+.magnets label:last-child { border-bottom: 0; }
+.magnets label:hover { background: var(--surface-2); }
+.magnets label:has(input:checked) { background: var(--accent-soft); }
+.magnets input[type=radio] { accent-color: var(--accent); margin: 0; }
+.magnets .mt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.magnets .meta { color: var(--muted); white-space: nowrap; font-size: 12px; display: flex; gap: 8px; align-items: center; }
+.magnets .rej { opacity: .6; }
+@media (max-width: 860px) {
+  .pick-card { grid-template-columns: 1fr; }
+  .pick-card .poster { min-height: 0; aspect-ratio: 16 / 10; border-right: 0; border-bottom: 1px solid var(--line); }
+  .magnets label { grid-template-columns: 18px minmax(0, 1fr); }
+  .magnets .meta { grid-column: 2; }
+}
 .lvl { font-family: var(--mono); font-size: 11.5px; font-weight: 600; text-transform: uppercase; }
 .lvl-warning, .lvl-warn { color: var(--warn); }
 .lvl-error { color: var(--bad); }
@@ -269,15 +314,16 @@ label.tile.queued .pick { display: none; }
     <svg viewBox="0 0 32 32"><rect width="32" height="32" rx="8" fill="var(--accent)"/><path d="M10 21h12a4 4 0 0 0 .4-8 6 6 0 0 0-11.5-1.4A4.8 4.8 0 0 0 10 21z" fill="var(--accent-fg)"/></svg>
     kumo<small>{{ version }}</small></a>
   <nav class="nav">
-    <div class="nav-group">115</div>
-    <a href="/" class="{{ 'on' if path == '/' or path.startswith('/wanted') }}"><svg viewBox="0 0 24 24"><path d="M12 3v12m0 0-4-4m4 4 4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>下载队列</a>
+    <div class="nav-group" title="订阅资料站获取作品 → 搜磁力 → 选磁力 → 115">片源 · 找作品</div>
+    {{ nav('/actresses', '女优', '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>') }}
+    {{ nav('/releases', '作品', '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 9h18M8 5v4M16 5v4"/>') }}
+    {{ nav('/subscriptions', '订阅', '<path d="M4 11a9 9 0 0 1 9 9M4 4a16 16 0 0 1 16 16"/><circle cx="5" cy="19" r="1.5"/>') }}
+    <div class="nav-group" title="爬取优质磁力 → 识别番号 → 确认影片 → 115">磁力 · 找资源</div>
+    <a href="/pool" class="{{ 'on' if request.url.path.startswith('/pool') or request.url.path.startswith('/resources') }}"><svg viewBox="0 0 24 24"><path d="M6 3v8a6 6 0 0 0 12 0V3M6 7h4M14 7h4"/></svg>磁力池{% if pool_pending %}<span class="count-pill">{{ pool_pending }}</span>{% endif %}</a>
+    <div class="nav-group">115 · 下载</div>
+    <a href="/" class="{{ 'on' if request.url.path == '/' or request.url.path.startswith('/wanted') }}"><svg viewBox="0 0 24 24"><path d="M12 3v12m0 0-4-4m4 4 4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>下载队列</a>
     {{ nav('/library', '目录同步', '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>') }}
     {{ nav('/auth', '授权', '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>') }}
-    <div class="nav-group">爬取</div>
-    {{ nav('/actresses', '女优', '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>') }}
-    {{ nav('/releases', '新作', '<path d="M12 3l2.6 5.6 6.1.7-4.5 4.2 1.2 6L12 16.6 6.6 19.5l1.2-6L3.3 9.3l6.1-.7z"/>') }}
-    {{ nav('/subscriptions', '订阅', '<path d="M4 11a9 9 0 0 1 9 9M4 4a16 16 0 0 1 16 16"/><circle cx="5" cy="19" r="1.5"/>') }}
-    {{ nav('/resources', '论坛', '<path d="M21 12a8 8 0 0 1-11.6 7.1L4 21l1.9-5.4A8 8 0 1 1 21 12z"/>') }}
     <div class="nav-group">系统</div>
     {{ nav('/settings', '设置', '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>') }}
     {{ nav('/events', '日志', '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>') }}

@@ -15,6 +15,26 @@
   </div>
 </div>
 
+{% set img = cover(release, work) %}
+{% if work or release %}
+<div class="card" style="display:flex;gap:18px;align-items:flex-start;flex-wrap:wrap">
+  {% if img %}<div style="width:240px;max-width:100%;aspect-ratio:16/10.7;border-radius:var(--radius-sm);background:var(--surface-2) url('{{ img }}') right center/cover;flex:none"></div>{% endif %}
+  <div style="flex:1;min-width:220px">
+    <div style="font-weight:600;margin-bottom:6px">{{ (work.title if work and work.title else release.title if release else '') }}</div>
+    <div class="small muted" style="display:flex;flex-direction:column;gap:4px">
+      {% set d = work.date if work and work.date else (release.date if release else None) %}
+      {% if d %}<span>发行 {{ d }}</span>{% endif %}
+      {% if work and work.actors %}<span>{% for a in work.actors %}<span class="tag">{{ a }}</span>{% endfor %}</span>{% endif %}
+      {% if work and work.studio %}<span>{{ work.studio }}</span>{% endif %}
+      <span style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px">
+        {% if release %}<a class="src" style="color:var(--accent)" href="{{ release.url }}" target="_blank" rel="noreferrer">作品库 · {{ SOURCE_LABELS.get(release.source, release.source) }}</a>{% endif %}
+        {% if work %}{% if amane_url and work.amane_id %}<a class="src amane" href="{{ amane_url }}/meta/{{ work.amane_id }}" target="_blank" rel="noreferrer">在 Amane 中查看{% if work.file_count %} · 已入库{% endif %}</a>{% else %}<span class="src amane">Amane</span>{% endif %}{% endif %}
+      </span>
+    </div>
+  </div>
+</div>
+{% endif %}
+
 {% if w.note %}<div class="alert {{ 'error' if w.status.value in ('failed', 'no_magnet') else 'info' }}"><span>{{ w.note }}</span></div>{% endif %}
 {% if owned %}
 <div class="alert success"><span>115 目录中已有：
