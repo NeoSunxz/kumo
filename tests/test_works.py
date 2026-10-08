@@ -415,3 +415,14 @@ def test_tags_all_filter_and_move(service: Service, tmp_path: Path) -> None:
         c.post(f"/sources/{b.id}/up")  # 已经在最前, 不变
         assert [s.id for s in service.repo.sources()] == [b.id, a.id]
         assert "#1" in c.get("/sources").text
+
+
+def test_empty_filter_values_mean_all(service: Service, tmp_path: Path) -> None:
+    """表单里选「全部」会提交空串, 不能报 422."""
+    release(service, "ABC-110", "2026-10-01")
+    with TestClient(create_app(Env(data_dir=tmp_path, password=""), service=service)) as c:
+        for url in ("/works?origin=&sub=&src=&days=&todo=1&q=", "/resources?forum=&typeid=&src=&q=",
+                    "/rss/releases.xml?days=&sub=", "/works?days=7"):
+            r = c.get(url)
+            assert r.status_code == 200, url
+        assert "ABC-110" in c.get("/works?days=").text

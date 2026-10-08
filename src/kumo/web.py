@@ -16,7 +16,7 @@ from typing import Annotated, Any
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit
 
 import segno
-from fastapi import FastAPI, Form, HTTPException, Request, Response
+from fastapi import FastAPI, Form, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
@@ -301,9 +301,10 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
 
     @app.get("/resources", response_class=HTMLResponse)
     async def resources(
-        request: Request, q: str = "", forum: int | None = None, typeid: int | None = None, subtitle: str = "", source: str = "",
-        src: int | None = None,
+        request: Request, q: str = "", forum_: str = Query("", alias="forum"), typeid_: str = Query("", alias="typeid"),
+        subtitle: str = "", source: str = "", src_: str = Query("", alias="src"),
     ) -> HTMLResponse:
+        forum, typeid, src = _opt_int(forum_), _opt_int(typeid_), _opt_int(src_)
         repo = svc(request).repo
         sources = [source] if source in ("sehuatang", "sukebei", "rss") else None
         tags = [t for t in request.query_params.getlist("tag") if t in TAG_LABELS]
@@ -505,9 +506,10 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
 
     @app.get("/works", response_class=HTMLResponse)
     async def works(
-        request: Request, origin: str = "", sub: str = "", src: str = "", q: str = "", days: int | None = None,
+        request: Request, origin: str = "", sub: str = "", src: str = "", q: str = "", days_: str = Query("", alias="days"),
         todo: str = "1", message: str = "",
     ) -> HTMLResponse:
+        days = _opt_int(days_)
         s = svc(request)
         try:
             sub_ids, source_ids = _int_list(sub), _int_list(src)
@@ -625,9 +627,10 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
 
     @app.get("/rss/releases.xml")
     async def rss_releases(
-        request: Request, sub: str = "", kind: str = "", q: str = "", days: int | None = None, limit: int = 100
+        request: Request, sub: str = "", kind: str = "", q: str = "", days_: str = Query("", alias="days"), limit: int = 100
     ) -> Response:
         """订阅新作 RSS, 供 Amane 刮削元数据; 参数与新作页面的筛选一致."""
+        days = _opt_int(days_)
         s = svc(request)
         sub_ids, kinds = _release_filters(sub, kind)
         rows = s.repo.releases(sub_ids=sub_ids, kinds=kinds, search=q.strip(), days=days, limit=max(1, min(limit, 500)))
@@ -820,6 +823,12 @@ def _source_from_form(form: Any, src: MagnetSource) -> MagnetSource:
         kind=kind, name=data.get("name", "").strip() or str(default_name), params=params, filter=flt,
         enabled=src.enabled, auto_download="auto_download" in data,
     )
+
+
+def _opt_int(text: str) -> int | None:
+    """可选的数字参数: 表单里「全部」提交的是空串, 当作没给."""
+    text = text.strip()
+    return int(text) if text.isdigit() else None
 
 
 def _int_list(text: str) -> list[int]:
