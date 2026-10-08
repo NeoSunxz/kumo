@@ -1,10 +1,11 @@
 {% extends "base.html" %}
+{% from "_flow.html" import flow %}
 {% block title %}下载队列 - kumo{% endblock %}
 {% block content %}
 <div class="page-head">
   <div>
     <h1>下载队列</h1>
-    <p class="lead">片源与磁力两条路径在这里汇合：搜磁力 → 选择磁力 → 提交 115 云下载</p>
+    {{ flow('choose') }}
   </div>
   <div class="actions">
     <details class="menu">

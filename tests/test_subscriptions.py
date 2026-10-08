@@ -313,10 +313,10 @@ def test_subscription_and_release_pages(service: Service, tmp_path: Path, lists:
         assert c.get("/releases?kind=studio&days=30&todo=1&q=M").status_code == 200
 
         rel_ids = [r.id for r, *_ in service.repo.releases()]
-        r = c.post("/releases/queue", data={"ids": [str(i) for i in rel_ids]}, headers={"referer": "http://testserver/releases?sub=1&message=old"}, follow_redirects=False)
+        r = c.post("/releases/queue", data={"ids": [str(i) for i in rel_ids]}, headers={"referer": "http://testserver/works?sub=1&message=old"}, follow_redirects=False)
         assert r.status_code == 303
         location = r.headers["location"]
-        assert location.startswith("/releases?sub=1&message=") and location.count("message=") == 1
+        assert location.startswith("/works?sub=1&message=") and location.count("message=") == 1
         assert {w.number for w in service.repo.list_wanted()} >= {"MNGS-070", "MDVR-444"}
 
         c.post(f"/subscriptions/{a.id}/delete")

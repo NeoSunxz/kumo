@@ -6,6 +6,7 @@ import asyncio
 import base64
 import re
 import secrets
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -26,13 +27,13 @@ from .amane import AmaneError
 from .feeds import render_release_rss, render_resource_rss, render_rss
 from .images import ImageCache, ImageError
 from .magnets import SITES, SiteError
-from .models import STATUS_LABELS, TAG_LABELS, WantedStatus, format_size
+from .models import FILTER_TAGS, SOURCE_KINDS, STATUS_LABELS, TAG_LABELS, MagnetSource, SourceFilter, WantedStatus, format_size
 from .numbers import parse_input
 from .pan115 import DeviceAuth, Pan115Error
 from .sehuatang import Sehuatang
 from .subscriptions import KIND_LABELS, SOURCE_LABELS
 from .service import Service
-from .settings import CrawlForum, Env, InputFeed, Settings, SukebeiRule
+from .settings import Env, Settings
 
 JOB_LABELS = {
     "search": "搜索磁力", "submit": "提交云下载", "tasks": "刷新下载进度", "sync": "同步 115 目录",
@@ -64,6 +65,7 @@ _TEMPLATES.env.globals["cover"] = _cover
 _TEMPLATES.env.globals["today"] = lambda: datetime.now().strftime("%Y-%m-%d")
 _TEMPLATES.env.globals.update(
     STATUS_LABELS=STATUS_LABELS, TAG_LABELS=TAG_LABELS, KIND_LABELS=KIND_LABELS, SOURCE_LABELS=SOURCE_LABELS,
+    FILTER_TAGS=FILTER_TAGS, SOURCE_KINDS=SOURCE_KINDS,
     version=__version__,
 )
 
@@ -110,7 +112,7 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
         ctx.setdefault("errors", {JOB_LABELS.get(k, k): v for k, v in s.last_error.items()})
         ctx.setdefault("running", [JOB_LABELS.get(k, k) for k in s.running])
         ctx.setdefault("flash", request.query_params.get("flash", ""))
-        ctx.setdefault("pool_pending", s.repo.pool_pending_count())
+        ctx.setdefault("todo_new", s.repo.new_unhandled_count(time.time() - 7 * 86400))
         ctx.setdefault("amane_url", s.settings.amane_url.rstrip("/"))
         return _TEMPLATES.TemplateResponse(request, name, ctx)
 
@@ -200,88 +202,19 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
 
     @app.post("/settings", response_class=HTMLResponse)
     async def save_settings(request: Request) -> Response:
+        """保存设置; 只改表单里出现的字段, 所以设置也可以分散在各页面的小表单里 (带 ``_back`` 时回到原页面)."""
         form = await request.form()
-        data = {k: str(v) for k, v in form.items()}
-
-        def lines(key: str) -> list[str]:
-            return [x.strip() for x in data.get(key, "").splitlines() if x.strip()]
-
-        feeds = []
-        for line in lines("input_feeds"):
-            url, _, rest = line.partition("|")
-            include, _, exclude = rest.partition("|")
-            feeds.append(
-                InputFeed(
-                    url=url.strip(),
-                    include_keywords=[k.strip() for k in include.split(",") if k.strip()],
-                    exclude_keywords=[k.strip() for k in exclude.split(",") if k.strip()],
-                )
-            )
-        def keywords(text: str) -> list[str]:
-            return [k.strip() for k in re.split(r"[,，]", text) if k.strip()]
-
+        current = svc(request).settings
+        back_to = str(form.get("_back") or "")
         try:
-            forums = []
-            for line in lines("crawl_forums"):
-                parts = [p.strip() for p in line.split("|")] + [""] * 5
-                fid, sep, typeid = parts[0].partition(":")
-                if not fid.strip().isdigit() or (sep and not typeid.strip().isdigit()):
-                    raise ValueError(f"板块写成「编号」或「编号:分类编号」: {line}")
-                forums.append(
-                    CrawlForum(
-                        fid=int(fid),
-                        typeid=int(typeid) if typeid else None,
-                        auto_download=parts[1] in ("自动", "是", "auto", "yes", "1"),
-                        types=keywords(parts[2]),
-                        include_keywords=keywords(parts[3]),
-                        exclude_keywords=keywords(parts[4]),
-                    )
-                )
-            rules = [_parse_sukebei_rule(line) for line in lines("sukebei_rules")]
-            current = svc(request).settings
-            settings = Settings(
-                app_id=data.get("app_id", ""),
-                download_path=data.get("download_path", ""),
-                sync_paths=lines("sync_paths"),
-                sync_interval_hours=float(data.get("sync_interval_hours") or 6),
-                sites=[name for name in SEARCH_SOURCES if data.get(f"site_{name}")],
-                scrape_proxy=data.get("scrape_proxy", ""),
-                flaresolverr_url=data.get("flaresolverr_url", ""),
-                # 不改动时表单提交空串: 留空表示保持原值, 「清除」勾选框才删除.
-                javdb_cookie=""
-                if "clear_javdb_cookie" in data
-                else (data.get("javdb_cookie") or svc(request).settings.javdb_cookie),
-                no_magnet_retry_hours=float(data.get("no_magnet_retry_hours") or 24),
-                size_min_gb=float(data.get("size_min_gb") or 0),
-                size_max_gb=float(data.get("size_max_gb") or 0),
-                prefer_subtitle="prefer_subtitle" in data,
-                require_subtitle="require_subtitle" in data,
-                allow_4k="allow_4k" in data,
-                avoid_h265="avoid_h265" in data,
-                exclude_keywords=[k.strip() for k in data.get("exclude_keywords", "").split(",") if k.strip()],
-                submit_batch=int(data.get("submit_batch") or 5),
-                task_poll_minutes=float(data.get("task_poll_minutes") or 5),
-                input_feeds=feeds,
-                feed_interval_minutes=float(data.get("feed_interval_minutes") or 30),
-                crawl_enabled="crawl_enabled" in data,
-                crawl_base_url=data.get("crawl_base_url") or "https://www.sehuatang.net",
-                crawl_forums=forums,
-                crawl_pages=int(data.get("crawl_pages") or 2),
-                crawl_interval_minutes=float(data.get("crawl_interval_minutes") or 60),
-                crawl_request_delay=float(data.get("crawl_request_delay") or 1.5),
-                subs_interval_hours=float(data.get("subs_interval_hours") or 12),
-                subs_pages=int(data.get("subs_pages") or 1),
-                subs_initial_pages=int(data.get("subs_initial_pages") or 3),
-                sukebei_rules=rules,
-                sukebei_interval_minutes=float(data.get("sukebei_interval_minutes") or 60),
-                amane_url=data.get("amane_url", "").rstrip("/"),
-                amane_token="" if "clear_amane_token" in data else (data.get("amane_token") or current.amane_token),
-                amane_interval_minutes=float(data.get("amane_interval_minutes") or 30),
-                amane_refresh_days=float(data.get("amane_refresh_days") or 7),
-            )
+            settings = _merge_settings(current, form)
         except (ValidationError, ValueError) as exc:
-            return page(request, "settings.html", s=svc(request).settings, sites=SEARCH_SOURCES, message=f"保存失败: {exc}")
+            if back_to:
+                return back(_with_flash(back_to, f"保存失败: {exc}"))
+            return page(request, "settings.html", s=current, sites=SEARCH_SOURCES, message=f"保存失败: {exc}")
         svc(request).repo.save_settings(settings)
+        if back_to:
+            return back(_with_flash(back_to, "已保存"))
         return page(request, "settings.html", s=settings, sites=SEARCH_SOURCES, message="已保存")
 
     @app.post("/settings/amane-test")
@@ -362,10 +295,12 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
 
     @app.get("/resources", response_class=HTMLResponse)
     async def resources(
-        request: Request, q: str = "", forum: int | None = None, typeid: int | None = None, subtitle: str = "", source: str = ""
+        request: Request, q: str = "", forum: int | None = None, typeid: int | None = None, subtitle: str = "", source: str = "",
+        src: int | None = None,
     ) -> HTMLResponse:
         repo = svc(request).repo
-        sources = [source] if source in ("sehuatang", "sukebei") else None
+        sources = [source] if source in ("sehuatang", "sukebei", "rss") else None
+        tags = [t for t in request.query_params.getlist("tag") if t in TAG_LABELS]
         if forum or typeid:
             sources = ["sehuatang"]
         params = {k: v for k, v in (("fid", forum), ("typeid", typeid), ("subtitle", subtitle), ("q", q.strip())) if v}
@@ -378,10 +313,15 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
             items=repo.resources(
                 search=q.strip(),
                 sources=sources,
+                source_ids=[src] if src else None,
+                tags=tags,
                 forum_ids=[forum] if forum else None,
                 type_ids=[typeid] if typeid else None,
                 subtitle=True if subtitle == "1" else None,
             ),
+            magnet_sources=repo.sources(),
+            src=src,
+            tags=tags,
             forums=repo.resource_forums(),
             source_counts=repo.resource_sources(),
             source=source if sources and not forum else "",
@@ -391,39 +331,64 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
             typeid=typeid,
             subtitle=subtitle,
             rss_url=rss_url,
-            crawl_enabled=svc(request).settings.crawl_enabled,
+            has_sources=bool(repo.sources(enabled_only=True)),
         )
 
-    @app.get("/pool", response_class=HTMLResponse)
-    async def pool(request: Request, q: str = "", source: str = "") -> HTMLResponse:
+    @app.get("/pool")
+    async def pool_redirect() -> RedirectResponse:
+        return back("/works?origin=magnet")
+
+    # --- 磁力订阅 ---
+
+    @app.get("/sources", response_class=HTMLResponse)
+    async def sources(request: Request) -> HTMLResponse:
         s = svc(request)
-        sources = [source] if source in ("sehuatang", "sukebei") else None
-        return page(
-            request, "pool.html", groups=s.pool_groups(sources=sources, search=q.strip()), q=q, source=source if sources else "",
-            source_counts=s.repo.resource_sources(), settings=s.settings,
-        )
+        return page(request, "sources.html", sources=s.repo.sources(), settings=s.settings, base=str(request.base_url))
 
-    @app.post("/pool/{action}")
-    async def pool_action(request: Request, action: str) -> RedirectResponse:
-        """确认或忽略: ``only`` 指定单个番号 (卡片上的按钮), 否则处理勾选的番号."""
+    @app.post("/sources")
+    async def add_source(request: Request) -> RedirectResponse:
         form = await request.form()
-        only = str(form.get("only") or "")
-        numbers = [only] if only else [str(v) for v in form.getlist("ids")]
+        try:
+            src = svc(request).repo.add_source(_source_from_form(form, MagnetSource(kind=str(form.get("kind") or ""), name="")))
+        except ValueError as exc:
+            return back(_with_flash("/sources", f"添加失败: {exc}"))
+        return back(_with_flash(f"/sources#src-{src.id}", f"已添加「{src.name}」，点「立即爬取」试一下"))
+
+    @app.post("/sources/{source_id}")
+    async def edit_source(request: Request, source_id: int) -> RedirectResponse:
+        repo = svc(request).repo
+        src = repo.source(source_id)
+        if src is None:
+            raise HTTPException(404)
+        try:
+            new = _source_from_form(await request.form(), src)
+        except ValueError as exc:
+            return back(_with_flash(f"/sources#src-{source_id}", f"保存失败: {exc}"))
+        repo.update_source(source_id, name=new.name, params=new.params, filter=new.filter, auto_download=new.auto_download)
+        return back(_with_flash(f"/sources#src-{source_id}", f"已保存「{new.name}」"))
+
+    @app.post("/sources/{source_id}/{action}")
+    async def source_action(request: Request, source_id: int, action: str) -> RedirectResponse:
         s = svc(request)
-        if action == "confirm":
-            picks = [int(v) for n in numbers if str(v := form.get(f"pick_{n}") or "").isdigit()]
-            done = s.confirm_pool(picks)
-            if done:
-                asyncio.create_task(s.run_guarded("submit", s.run_submit))
-            flash = f"已加入下载队列 {done} 部"
-        elif action == "dismiss":
-            s.repo.dismiss_numbers(numbers)
-            flash = f"已忽略 {len(numbers)} 部"
+        src = s.repo.source(source_id)
+        if src is None:
+            raise HTTPException(404)
+        if action == "toggle":
+            s.repo.update_source(source_id, enabled=not src.enabled)
+        elif action == "auto":
+            s.repo.update_source(source_id, auto_download=not src.auto_download)
+        elif action == "run":
+            job = {"sehuatang": "crawl", "sukebei": "sukebei", "rss": "feeds"}[src.kind]
+            run = {"crawl": s.run_crawl, "sukebei": s.run_sukebei, "feeds": s.run_feeds}[job]
+            if job in s.running:
+                return back(_with_flash(f"/sources#src-{source_id}", f"{JOB_LABELS[job]}正在运行, 稍后再试"))
+            asyncio.create_task(s.run_guarded(job, lambda: run(source_id=source_id)))
+            return back(_with_flash(f"/sources#src-{source_id}", f"已开始爬取「{src.name}」, 稍后刷新查看"))
+        elif action == "delete":
+            s.repo.delete_source(source_id)
         else:
             raise HTTPException(400, "未知操作")
-        referer = urlsplit(request.headers.get("referer") or "/pool")
-        query = [(k, v) for k, v in parse_qsl(referer.query) if k != "flash"] + [("flash", flash)]
-        return back(f"/pool?{urlencode(query)}")
+        return back(f"/sources#src-{source_id}")
 
     @app.post("/resources/{resource_id}/download")
     async def download_resource(request: Request, resource_id: int) -> RedirectResponse:
@@ -492,31 +457,59 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
         kinds = [k for k in kind.split(",") if k in KIND_LABELS]
         return sub_ids, kinds
 
-    @app.get("/releases", response_class=HTMLResponse)
-    async def releases(
-        request: Request, sub: str = "", kind: str = "", q: str = "", days: int | None = None, todo: str = "", message: str = ""
+    @app.get("/releases")
+    async def releases_redirect(request: Request) -> RedirectResponse:
+        query = [(k, v) for k, v in request.query_params.multi_items()]
+        return back("/works?" + urlencode([("origin", "subs"), *query]))
+
+    @app.get("/works", response_class=HTMLResponse)
+    async def works(
+        request: Request, origin: str = "", sub: str = "", src: str = "", q: str = "", days: int | None = None,
+        todo: str = "1", message: str = "",
     ) -> HTMLResponse:
         s = svc(request)
-        sub_ids, kinds = _release_filters(sub, kind)
-        params = {k: v for k, v in (("sub", sub), ("kind", kind), ("q", q.strip()), ("days", days)) if v}
+        try:
+            sub_ids, source_ids = _int_list(sub), _int_list(src)
+        except ValueError as exc:
+            raise HTTPException(400, "sub / src 应为逗号分隔的编号") from exc
+        tags = [t for t in request.query_params.getlist("tag") if t in TAG_LABELS]
+        items = s.works(
+            origin=origin if origin in ("subs", "magnet") else "", sub_ids=sub_ids, source_ids=source_ids, tags=tags,
+            search=q.strip(), days=days, todo=todo == "1",
+        )
+        params = {k: v for k, v in (("sub", sub), ("q", q.strip()), ("days", days)) if v}
         rss_url = str(request.base_url) + "rss/releases.xml" + ("?" + urlencode(params) if params else "")
         if env.password:
             rss_url += ("&" if params else "?") + "key=<密码>"
-        items = s.repo.releases(sub_ids=sub_ids, kinds=kinds, search=q.strip(), days=days, not_queued=todo == "1", limit=300)
         return page(
-            request,
-            "releases.html",
-            items=items,
-            **_shared(s, [r.number for r, *_ in items]),
-            subs=s.repo.subscriptions(),
-            sub=sub,
-            kind=kind,
-            q=q,
-            days=days,
-            todo=todo,
-            rss_url=rss_url,
-            message=message,
+            request, "works.html", items=items, subs=s.repo.subscriptions(), sources=s.repo.sources(), origin=origin, sub=sub,
+            src=src, tags=tags, q=q, days=days, todo=todo, message=message, rss_url=rss_url,
         )
+
+    @app.post("/works/{action}")
+    async def works_action(request: Request, action: str) -> RedirectResponse:
+        """挑选: ``queue`` 加入下载队列 (之后磁力选择), ``dismiss`` 忽略, ``undismiss`` 取消忽略."""
+        form = await request.form()
+        only = str(form.get("only") or "")
+        numbers = [only] if only else [str(v) for v in form.getlist("ids")]
+        s = svc(request)
+        if action == "queue":
+            added = s.queue_numbers(numbers)
+            if added:
+                asyncio.create_task(s.run_guarded("search", s.run_search))
+            message = f"已加入下载队列 {added} 部, 接下来自动磁力选择 (已在队列中的跳过)"
+        elif action == "dismiss":
+            s.repo.dismiss_numbers(numbers)
+            message = f"已忽略 {len(numbers)} 部"
+        elif action == "undismiss":
+            s.repo.undismiss_numbers(numbers)
+            message = f"已取消忽略 {len(numbers)} 部"
+        else:
+            raise HTTPException(400, "未知操作")
+        referer = urlsplit(request.headers.get("referer") or "/works")
+        path = referer.path if referer.path.startswith(("/works", "/actresses")) else "/works"
+        query = [(k, v) for k, v in parse_qsl(referer.query) if k != "message"] + [("message", message)]
+        return back(f"{path}?{urlencode(query)}")
 
     @app.post("/releases/queue")
     async def queue_releases(request: Request) -> RedirectResponse:
@@ -528,7 +521,7 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
             asyncio.create_task(s.run_guarded("search", s.run_search))
         # 回到提交时所在的页面 (新作列表或女优详情), 保留筛选条件, 只替换提示.
         referer = urlsplit(request.headers.get("referer") or "/releases")
-        path = referer.path if referer.path.startswith(("/releases", "/actresses")) else "/releases"
+        path = referer.path if referer.path.startswith(("/works", "/actresses")) else "/works"
         query = [(k, v) for k, v in parse_qsl(referer.query) if k != "message"]
         query.append(("message", f"已加入下载队列 {added} 部 (已在队列中的跳过)"))
         return back(f"{path}?{urlencode(query)}")
@@ -593,12 +586,15 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
         s = svc(request)
         jobs = {
             "search": s.run_search, "submit": s.run_submit, "tasks": s.run_tasks, "sync": s.run_sync,
-            "feeds": s.run_feeds, "crawl": lambda: s.run_crawl(force=True), "subs": lambda: s.run_subscriptions(force=True),
-            "sukebei": lambda: s.run_sukebei(force=True), "amane": s.run_amane,
+            "feeds": s.run_feeds, "crawl": s.run_crawl, "subs": lambda: s.run_subscriptions(force=True),
+            "sukebei": s.run_sukebei, "amane": s.run_amane,
         }
         if job not in jobs:
             raise HTTPException(404)
-        if job in s.running:
+        kind = {"crawl": "sehuatang", "sukebei": "sukebei", "feeds": "rss"}.get(job)
+        if kind and not s.repo.sources(kind=kind, enabled_only=True):
+            flash = f"没有启用的{SOURCE_KINDS[kind]}磁力订阅, 到「磁力订阅」添加或启用"
+        elif job in s.running:
             flash = f"{JOB_LABELS[job]}已经在运行"
         else:
             asyncio.create_task(s.run_guarded(job, jobs[job]))
@@ -673,53 +669,100 @@ def _shared(s: Service, numbers: list[str]) -> dict[str, Any]:
     }
 
 
-_RULE_SEEDERS = re.compile(r"(?:做种|seed(?:ers)?)\s*(?:>=|≥|:|：)?\s*(\d+)", re.I)
+def _with_flash(url: str, flash: str) -> str:
+    path, _, fragment = url.partition("#")
+    parts = urlsplit(path)
+    query = [(k, v) for k, v in parse_qsl(parts.query) if k not in ("flash", "message")] + [("flash", flash)]
+    return f"{parts.path}?{urlencode(query)}" + (f"#{fragment}" if fragment else "")
 
 
-def _parse_sukebei_rule(line: str) -> SukebeiRule:
-    """``名称 | 搜索词 | 选项``; 选项用空格分隔: 自动、可信、做种>=N、上传者:名字、分类:2_2、+包含词、-排除词."""
-    parts = [p.strip() for p in line.split("|")]
-    if not parts[0]:
-        raise ValueError(f"sukebei 规则要有名称: {line}")
-    rule: dict[str, Any] = {"name": parts[0], "query": parts[1] if len(parts) > 1 else "", "include_keywords": [], "exclude_keywords": []}
-    for opt in (parts[2] if len(parts) > 2 else "").split():
-        key, sep, value = opt.replace("：", ":").partition(":")
-        if opt in ("自动", "auto"):
-            rule["auto_download"] = True
-        elif opt in ("可信", "trusted"):
-            rule["trusted_only"] = True
-        elif m := _RULE_SEEDERS.fullmatch(opt):
-            rule["min_seeders"] = int(m.group(1))
-        elif sep and key in ("上传者", "user", "u"):
-            rule["user"] = value
-        elif sep and key in ("分类", "category", "c"):
-            rule["category"] = value
-        elif opt.startswith("+") and len(opt) > 1:
-            rule["include_keywords"].append(opt[1:])
-        elif opt.startswith("-") and len(opt) > 1:
-            rule["exclude_keywords"].append(opt[1:])
-        else:
-            raise ValueError(f"sukebei 规则「{parts[0]}」有无法识别的选项: {opt}")
-    return SukebeiRule(**rule)
+def _words(text: str) -> list[str]:
+    return [k.strip() for k in re.split(r"[,，\n]", text) if k.strip()]
 
 
-def format_sukebei_rule(rule: SukebeiRule) -> str:
-    opts = []
-    if rule.auto_download:
-        opts.append("自动")
-    if rule.trusted_only:
-        opts.append("可信")
-    if rule.min_seeders:
-        opts.append(f"做种>={rule.min_seeders}")
-    if rule.user:
-        opts.append(f"上传者:{rule.user}")
-    if rule.category != "2_2":
-        opts.append(f"分类:{rule.category}")
-    opts += [f"+{k}" for k in rule.include_keywords] + [f"-{k}" for k in rule.exclude_keywords]
-    return " | ".join(x for x in (rule.name, rule.query, " ".join(opts)) if x is not None).rstrip(" |")
+#: 只有表单里出现才算改动的秘密字段: 留空表示保持原值, 「清除」勾选框才删除.
+_SECRETS = ("javdb_cookie", "amane_token")
+#: 按行分隔的列表字段, 其余列表字段按逗号分隔.
+_LINE_LISTS = ("sync_paths",)
 
 
-_TEMPLATES.env.filters["sukebei_rule"] = format_sukebei_rule
+def _merge_settings(current: Settings, form: Any) -> Settings:
+    """表单里出现的字段覆盖当前设置. 勾选框没勾时不提交, 所以表单用 ``_checkboxes`` 列出它包含的勾选框;
+    磁力来源的勾选框是 ``site_<名称>``, 表单带 ``_sites`` 时整体替换."""
+    data = {k: str(v) for k, v in form.items()}
+    updates: dict[str, Any] = {}
+    for name, field in Settings.model_fields.items():
+        if name in _SECRETS:
+            if f"clear_{name}" in data:
+                updates[name] = ""
+            elif data.get(name):
+                updates[name] = data[name].strip()
+            continue
+        if name not in data:
+            continue
+        value, annotation = data[name], str(field.annotation)
+        if "list[str]" in annotation:
+            updates[name] = [x.strip() for x in value.splitlines() if x.strip()] if name in _LINE_LISTS else _words(value)
+        elif annotation in ("<class 'float'>", "float"):
+            if value.strip():
+                updates[name] = float(value)
+        elif annotation in ("<class 'int'>", "int"):
+            if value.strip():
+                updates[name] = int(value)
+        elif annotation in ("<class 'bool'>", "bool"):
+            updates[name] = True
+        elif annotation in ("<class 'str'>", "str"):
+            updates[name] = value.strip().rstrip("/") if name.endswith("_url") else value.strip()
+    for name in _words(data.get("_checkboxes", "")):
+        if name in Settings.model_fields:
+            updates[name] = name in data
+    if "_sites" in data:
+        updates["sites"] = [n for n in SEARCH_SOURCES if f"site_{n}" in data]
+    return Settings.model_validate({**current.model_dump(), **updates})
+
+
+def _source_from_form(form: Any, src: MagnetSource) -> MagnetSource:
+    """磁力订阅的新增 / 编辑表单."""
+    data = {k: str(v) for k, v in form.items()}
+    kind = src.kind
+    if kind not in SOURCE_KINDS:
+        raise ValueError("未知的订阅类型")
+    if kind == "sehuatang":
+        fid, typeid = data.get("fid", "").strip(), data.get("typeid", "").strip()
+        if not fid.isdigit() or (typeid and not typeid.isdigit()):
+            raise ValueError("板块编号与分类编号应为数字")
+        params: dict[str, object] = {"fid": int(fid), "typeid": int(typeid) if typeid else None}
+        default_name = f"板块 {fid}" + (f":{typeid}" if typeid else "")
+    elif kind == "sukebei":
+        seeders = data.get("min_seeders", "").strip() or "0"
+        if not seeders.isdigit():
+            raise ValueError("最少做种应为数字")
+        params = {
+            "query": data.get("query", "").strip(), "user": data.get("user", "").strip(),
+            "category": data.get("category", "").strip() or "2_2", "trusted_only": "trusted_only" in data,
+            "min_seeders": int(seeders),
+        }
+        default_name = params["query"] or params["user"] or "sukebei"
+    else:
+        url = data.get("url", "").strip()
+        if not url.startswith(("http://", "https://")):
+            raise ValueError("RSS 地址应以 http:// 或 https:// 开头")
+        params = {"url": url}
+        default_name = urlsplit(url).hostname or url
+    multi = form.getlist if hasattr(form, "getlist") else (lambda k: [])
+    flt = SourceFilter(
+        tags_any=[t for t in multi("tags_any") if t in TAG_LABELS],
+        tags_none=[t for t in multi("tags_none") if t in TAG_LABELS],
+        brackets=_words(data.get("brackets", "")),
+        types=_words(data.get("types", "")),
+        include=_words(data.get("include", "")),
+        exclude=_words(data.get("exclude", "")),
+        numbered="numbered" in data,
+    )
+    return MagnetSource(
+        kind=kind, name=data.get("name", "").strip() or str(default_name), params=params, filter=flt,
+        enabled=src.enabled, auto_download="auto_download" in data,
+    )
 
 
 def _int_list(text: str) -> list[int]:

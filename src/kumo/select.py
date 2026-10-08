@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 
 from .models import Candidate, Tag
-from .numbers import contains_number, has_subtitle_suffix
+from .numbers import contains_number, extract_number, has_subtitle_suffix, is_uncensored_number, western_number
 from .settings import Settings
 
 _GB = 1024**3
@@ -18,7 +18,21 @@ _SUBTITLE_WORDS = re.compile(r"中文字幕|中字|字幕|chinese\s*sub|\[ch\]|\
 _UHD_WORDS = re.compile(r"\b4k\b|2160p|\buhd\b", re.I)
 _HD_WORDS = re.compile(r"1080p|\bfhd\b|\bhd\b|高清", re.I)
 _H265_WORDS = re.compile(r"h\.?265|x265|hevc", re.I)
-_LEAK_WORDS = re.compile(r"破解|无码|無碼|uncensored|leak|reducing\s*mosaic|去码|去碼", re.I)
+_LEAK_WORDS = re.compile(r"破解|流出|leak|reducing\s*mosaic|去码|去碼|无码化|無碼化", re.I)
+_UNCENSORED_WORDS = re.compile(r"无码|無碼|uncensored|無修正", re.I)
+_WESTERN_WORDS = re.compile(r"欧美|歐美|western")
+_BRACKETS = re.compile(r"\[([^\[\]]{1,30})\]|【([^【】]{1,30})】")
+
+
+def brackets(title: str) -> list[str]:
+    """标题里方括号中的标记 (片头 ``[新模型无码破解]``、``[中文字幕]``、``[自提征用]``)."""
+    return [a or b for a, b in _BRACKETS.findall(title)]
+
+
+def title_tags(title: str, number: str | None = None) -> set[str]:
+    """从标题识别标签; ``number`` 为空时自己从标题里识别番号."""
+    number = number if number is not None else (extract_number(title) or "")
+    return detect_tags(Candidate(site="", title=title, magnet="", info_hash=""), number)
 
 
 def detect_tags(cand: Candidate, number: str) -> set[str]:
@@ -34,6 +48,13 @@ def detect_tags(cand: Candidate, number: str) -> set[str]:
         tags.add(Tag.H265)
     if _LEAK_WORDS.search(title):
         tags.add(Tag.LEAK)
+    elif (number and is_uncensored_number(number)) or _UNCENSORED_WORDS.search(title):
+        # 破解是有码作品去马赛克, 与无码厂牌原版分开; 「无码破解」只算破解.
+        tags.add(Tag.UNCENSORED)
+    if (number and "." in number and western_number(number)) or _WESTERN_WORDS.search(title):
+        tags.add(Tag.WESTERN)
+    if number.startswith("FC2-") or re.search(r"FC2[\s_-]*PPV", title, re.I):
+        tags.add(Tag.FC2)
     return tags
 
 

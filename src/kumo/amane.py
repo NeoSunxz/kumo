@@ -20,6 +20,11 @@ _PROFILE_FIELDS = (
 )
 
 
+def amane_number(number: str) -> str:
+    """kumo 的番号写法转成 Amane 的: FC2 在 Amane 里是 ``FC2-1234567`` (没有 PPV), 其余相同."""
+    return "FC2-" + number.removeprefix("FC2-PPV-") if number.upper().startswith("FC2-PPV-") else number
+
+
 class AmaneError(Exception):
     pass
 
@@ -56,9 +61,10 @@ class Amane:
 
     async def work(self, number: str) -> Work:
         """按番号查作品. ``/api/metadata?search=`` 是番号与标题的模糊匹配, 这里只取番号完全一致的."""
-        data = await self._get("/api/metadata", {"search": number, "limit": 20})
+        query = amane_number(number)
+        data = await self._get("/api/metadata", {"search": query, "limit": 20})
         for item in data.get("items") or []:
-            if str(item.get("number", "")).casefold() != number.casefold():
+            if str(item.get("number", "")).casefold() != query.casefold():
                 continue
             posters = item.get("poster_urls") or []
             thumbs = item.get("thumb_urls") or []

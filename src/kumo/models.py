@@ -70,7 +70,11 @@ class Tag(StrEnum):
     UHD = "4k"
     H265 = "h265"
     LEAK = "leak"
-    """无码破解 / 去马赛克."""
+    """有码作品的无码破解 / 流出 / 去马赛克."""
+    UNCENSORED = "uncensored"
+    """无码厂牌原版 (HEYZO、一本道、加勒比、H4610 等)."""
+    WESTERN = "western"
+    FC2 = "fc2"
 
 
 TAG_LABELS: dict[str, str] = {
@@ -79,7 +83,13 @@ TAG_LABELS: dict[str, str] = {
     Tag.UHD: "4K",
     Tag.H265: "H265",
     Tag.LEAK: "破解",
+    Tag.UNCENSORED: "无码",
+    Tag.WESTERN: "欧美",
+    Tag.FC2: "FC2",
 }
+
+#: 用户可选的标签 (筛选、磁力订阅的入池条件), 按网页上的显示顺序.
+FILTER_TAGS = [Tag.SUBTITLE, Tag.LEAK, Tag.UNCENSORED, Tag.WESTERN, Tag.FC2, Tag.UHD, Tag.HD, Tag.H265]
 
 _MAGNET_HASH = re.compile(r"urn:btih:([0-9a-fA-F]{40}|[A-Za-z2-7]{32})")
 
@@ -157,17 +167,110 @@ class Resource:
     subtitle: bool = False
     seeders: int | None = None
     wanted_id: int | None = None
-    dismissed: bool = False
-    """在「确认影片」里被忽略; 不再出现在待确认列表."""
+    tags: set[str] = field(default_factory=set)
+    """从标题识别的标签 (字幕、破解、无码、欧美…)."""
+    brackets: list[str] = field(default_factory=list)
+    """标题里方括号中的标记 (片头 ``[新模型无码破解]`` 等)."""
+    source_id: int | None = None
+    """入池的磁力订阅."""
     crawled_at: float = 0.0
     id: int | None = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> Resource:
-        data = dict(row)
+        data = {k: row[k] for k in row.keys() if k in cls.__dataclass_fields__}
         data["subtitle"] = bool(data["subtitle"])
-        data["dismissed"] = bool(data.get("dismissed"))
+        data["tags"] = set(json.loads(data.get("tags") or "[]"))
+        data["brackets"] = json.loads(data.get("brackets") or "[]")
         return cls(**data)
+
+
+SOURCE_KINDS = {"sehuatang": "论坛 sehuatang", "sukebei": "sukebei", "rss": "RSS"}
+
+
+@dataclass
+class SourceFilter:
+    """磁力订阅的入池条件; 都为空表示全部入池. 只看标题, 论坛可以在打开帖子前就判断."""
+
+    tags_any: list[str] = field(default_factory=list)
+    """至少有其中一个标签 (如只要「破解」)."""
+    tags_none: list[str] = field(default_factory=list)
+    """不能有这些标签 (如不要「欧美」)."""
+    brackets: list[str] = field(default_factory=list)
+    """片头方括号里含其中之一 (如「破解」匹配 ``[新模型无码破解]``)."""
+    types: list[str] = field(default_factory=list)
+    """论坛分类名."""
+    include: list[str] = field(default_factory=list)
+    exclude: list[str] = field(default_factory=list)
+    numbered: bool = False
+    """只要识别出番号的."""
+
+    def accepts(self, title: str, tags: set[str], brackets: list[str], type_name: str = "", number: str | None = None) -> bool:
+        if self.tags_any and not tags & set(self.tags_any):
+            return False
+        if tags & set(self.tags_none):
+            return False
+        if self.brackets and not any(b in br for b in self.brackets for br in brackets):
+            return False
+        if self.types and type_name not in self.types:
+            return False
+        lowered = title.lower()
+        if self.include and not any(k.lower() in lowered for k in self.include):
+            return False
+        if any(k.lower() in lowered for k in self.exclude):
+            return False
+        return not (self.numbered and not number)
+
+    def summary(self) -> list[str]:
+        out = [f"要{TAG_LABELS.get(t, t)}" for t in self.tags_any] + [f"不要{TAG_LABELS.get(t, t)}" for t in self.tags_none]
+        out += [f"片头[{b}]" for b in self.brackets] + [f"分类:{t}" for t in self.types]
+        out += [f"+{k}" for k in self.include] + [f"-{k}" for k in self.exclude]
+        return out + (["只要有番号"] if self.numbered else [])
+
+
+@dataclass
+class MagnetSource:
+    """一条磁力订阅: 论坛板块 / sukebei 搜索 / RSS, 新磁力按入池条件进入磁力池."""
+
+    kind: str
+    name: str
+    params: dict[str, object] = field(default_factory=dict)
+    """sehuatang: fid、typeid; sukebei: query、user、category、trusted_only、min_seeders; rss: url."""
+    filter: SourceFilter = field(default_factory=SourceFilter)
+    enabled: bool = True
+    auto_download: bool = False
+    """入池后直接加入下载队列 (跳过挑选作品), 磁力按选择规则自动挑."""
+    last_run: float | None = None
+    last_error: str = ""
+    created_at: float = 0.0
+    id: int | None = None
+    found: int = 0
+    """入池的磁力数 (查询时统计)."""
+
+    @classmethod
+    def from_row(cls, row: sqlite3.Row) -> MagnetSource:
+        data = {k: row[k] for k in row.keys() if k in cls.__dataclass_fields__}
+        data["params"] = json.loads(data.get("params") or "{}")
+        data["filter"] = SourceFilter(**json.loads(row["filter"] or "{}"))
+        data["enabled"] = bool(data["enabled"])
+        data["auto_download"] = bool(data["auto_download"])
+        return cls(**data)
+
+    @property
+    def label(self) -> str:
+        return SOURCE_KINDS.get(self.kind, self.kind)
+
+    def describe(self) -> str:
+        p = self.params
+        if self.kind == "sehuatang":
+            return f"板块 {p.get('fid')}" + (f" · 分类 {p.get('typeid')}" if p.get("typeid") else "")
+        if self.kind == "sukebei":
+            parts = [f"搜「{p.get('query')}」" if p.get("query") else "全部", f"分类 {p.get('category') or '2_2'}"]
+            parts += [f"上传者 {p.get('user')}"] if p.get("user") else []
+            parts += ["只要可信"] if p.get("trusted_only") else []
+            parts += [f"做种≥{p.get('min_seeders')}"] if p.get("min_seeders") else []
+            return " · ".join(parts)
+        return str(p.get("url", ""))
 
 
 @dataclass

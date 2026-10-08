@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from dataclasses import asdict
 import threading
 import time
 from collections.abc import Iterable, Iterator
@@ -14,7 +15,9 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from .models import AmaneActor, Candidate, LibraryFile, Release, Resource, Subscription, Wanted, WantedStatus, Work
+from .models import (
+    AmaneActor, Candidate, LibraryFile, MagnetSource, Release, Resource, Subscription, Wanted, WantedStatus, Work,
+)
 from .settings import Settings
 
 _SCHEMA = """
@@ -88,6 +91,9 @@ CREATE TABLE IF NOT EXISTS resource (
     seeders     INTEGER,
     wanted_id   INTEGER REFERENCES wanted(id) ON DELETE SET NULL,
     dismissed   INTEGER NOT NULL DEFAULT 0,
+    tags        TEXT,
+    brackets    TEXT,
+    source_id   INTEGER,
     crawled_at  REAL NOT NULL,
     UNIQUE (source, tid)
 );
@@ -126,6 +132,27 @@ CREATE TABLE IF NOT EXISTS release_sub (
     release_id       INTEGER NOT NULL REFERENCES release(id) ON DELETE CASCADE,
     subscription_id  INTEGER NOT NULL REFERENCES subscription(id) ON DELETE CASCADE,
     PRIMARY KEY (release_id, subscription_id)
+);
+CREATE TABLE IF NOT EXISTS magnet_source (
+    id             INTEGER PRIMARY KEY,
+    kind           TEXT NOT NULL,
+    name           TEXT NOT NULL,
+    params         TEXT NOT NULL DEFAULT '{}',
+    filter         TEXT NOT NULL DEFAULT '{}',
+    enabled        INTEGER NOT NULL DEFAULT 1,
+    auto_download  INTEGER NOT NULL DEFAULT 0,
+    last_run       REAL,
+    last_error     TEXT NOT NULL DEFAULT '',
+    created_at     REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS source_seen (
+    source_id  INTEGER NOT NULL,
+    key        TEXT NOT NULL,
+    PRIMARY KEY (source_id, key)
+);
+CREATE TABLE IF NOT EXISTS dismissed (
+    number  TEXT PRIMARY KEY COLLATE NOCASE,
+    at      REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS amane_work (
     number      TEXT PRIMARY KEY COLLATE NOCASE,
@@ -170,6 +197,23 @@ class Repo:
         self._migrate()
         self._conn.executescript(_SCHEMA)
         self._lock = threading.Lock()
+        self._backfill()
+
+    def _backfill(self) -> None:
+        """旧数据补齐: 资源的标签与片头标记 (按标题重新识别), 旧的「忽略」并入忽略列表."""
+        from .select import brackets, title_tags
+
+        rows = self._conn.execute("SELECT id, title, number FROM resource WHERE tags IS NULL").fetchall()
+        for r in rows:
+            self._conn.execute(
+                "UPDATE resource SET tags = ?, brackets = ? WHERE id = ?",
+                (json.dumps(sorted(title_tags(r["title"], r["number"]))), json.dumps(brackets(r["title"]), ensure_ascii=False), r["id"]),
+            )
+        self._conn.execute(
+            "INSERT OR IGNORE INTO dismissed(number, at) SELECT number, crawled_at FROM resource"
+            " WHERE dismissed = 1 AND number IS NOT NULL"
+        )
+        self._conn.execute("UPDATE resource SET dismissed = 0 WHERE dismissed = 1")
 
     def _migrate(self) -> None:
         """给旧库补列; 新库由建表语句直接建好."""
@@ -179,6 +223,10 @@ class Repo:
         if cols and "seeders" not in cols:
             self._conn.execute("ALTER TABLE resource ADD COLUMN seeders INTEGER")
             self._conn.execute("ALTER TABLE resource ADD COLUMN dismissed INTEGER NOT NULL DEFAULT 0")
+        if cols and "tags" not in cols:
+            self._conn.execute("ALTER TABLE resource ADD COLUMN tags TEXT")
+            self._conn.execute("ALTER TABLE resource ADD COLUMN brackets TEXT")
+            self._conn.execute("ALTER TABLE resource ADD COLUMN source_id INTEGER")
         cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(subscription)")}
         if cols and "avatar" not in cols:
             self._conn.execute("ALTER TABLE subscription ADD COLUMN avatar TEXT")
@@ -377,14 +425,20 @@ class Repo:
         return self._one("SELECT 1 FROM resource WHERE source = ? AND tid = ?", (source, tid)) is not None
 
     def add_resource(self, r: Resource) -> Resource:
+        if not r.tags and not r.brackets:
+            # 调用方没识别时按标题识别, 入池的磁力都有标签可筛.
+            from .select import brackets, title_tags
+
+            r.tags, r.brackets = title_tags(r.title, r.number), brackets(r.title)
         with self._tx() as c:
             c.execute(
                 "INSERT OR IGNORE INTO resource(source, tid, forum_id, forum_name, type_id, type_name, title, number,"
-                " magnet, info_hash, size, posted, subtitle, seeders, crawled_at)"
-                " VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " magnet, info_hash, size, posted, subtitle, seeders, tags, brackets, source_id, crawled_at)"
+                " VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     r.source, r.tid, r.forum_id, r.forum_name, r.type_id, r.type_name, r.title, r.number,
-                    r.magnet, r.info_hash, r.size, r.posted, int(r.subtitle), r.seeders, time.time(),
+                    r.magnet, r.info_hash, r.size, r.posted, int(r.subtitle), r.seeders,
+                    json.dumps(sorted(r.tags)), json.dumps(r.brackets, ensure_ascii=False), r.source_id, time.time(),
                 ),
             )
             row = c.execute("SELECT * FROM resource WHERE source = ? AND tid = ?", (r.source, r.tid)).fetchone()
@@ -399,6 +453,8 @@ class Repo:
         *,
         search: str = "",
         sources: list[str] | None = None,
+        source_ids: list[int] | None = None,
+        tags: list[str] | None = None,
         forum_ids: list[int] | None = None,
         type_ids: list[int] | None = None,
         subtitle: bool | None = None,
@@ -413,6 +469,12 @@ class Repo:
         if sources:
             sql += f" AND source IN ({','.join('?' * len(sources))})"
             params += sources
+        if source_ids:
+            sql += f" AND source_id IN ({','.join('?' * len(source_ids))})"
+            params += source_ids
+        for tag in tags or []:
+            sql += " AND tags LIKE ?"
+            params.append(f'%"{tag}"%')
         if forum_ids:
             sql += f" AND forum_id IN ({','.join('?' * len(forum_ids))})"
             params += forum_ids
@@ -443,39 +505,120 @@ class Repo:
     def resource_sources(self) -> dict[str, int]:
         return {r["source"]: r["n"] for r in self._all("SELECT source, COUNT(*) AS n FROM resource GROUP BY source")}
 
-    # --- 磁力池: 有番号、有磁力、还没进下载队列的资源, 等待确认影片 ---
+    # --- 挑选作品: 两条路径共用的「待挑选」= 没进下载队列、115 里没有、没被忽略 ---
 
-    _PENDING = (
-        "number IS NOT NULL AND magnet IS NOT NULL AND wanted_id IS NULL AND dismissed = 0"
-        " AND number NOT IN (SELECT number FROM wanted)"
+    _UNHANDLED = (
+        "number NOT IN (SELECT number FROM wanted)"
         " AND number NOT IN (SELECT number FROM library WHERE number IS NOT NULL)"
+        " AND number NOT IN (SELECT number FROM dismissed)"
     )
+    _PENDING = f"number IS NOT NULL AND wanted_id IS NULL AND {_UNHANDLED}"
 
-    def pool_pending(self, *, sources: list[str] | None = None, search: str = "", limit: int = 600) -> list[Resource]:
-        sql, params = f"SELECT * FROM resource WHERE {self._PENDING}", []
-        if sources:
-            sql += f" AND source IN ({','.join('?' * len(sources))})"
-            params += sources
+    def pool_resources(
+        self, *, source_ids: list[int] | None = None, tags: list[str] | None = None, search: str = "", days: int | None = None,
+        limit: int = 3000,
+    ) -> list[Resource]:
+        """磁力池里识别出番号的资源 (挑选作品页按番号聚合)."""
+        sql, params = "SELECT * FROM resource WHERE number IS NOT NULL", []
+        if source_ids:
+            sql += f" AND source_id IN ({','.join('?' * len(source_ids))})"
+            params += source_ids
+        for tag in tags or []:
+            sql += " AND tags LIKE ?"
+            params.append(f'%"{tag}"%')
         if search:
             sql += " AND (title LIKE ? OR number LIKE ?)"
             params += [f"%{search}%", f"%{search}%"]
+        if days:
+            sql += " AND crawled_at >= ?"
+            params.append(time.time() - days * 86400)
         sql += " ORDER BY crawled_at DESC, id DESC LIMIT ?"
         params.append(limit)
         return [Resource.from_row(r) for r in self._all(sql, params)]
 
-    def pool_pending_count(self) -> int:
-        row = self._one(f"SELECT COUNT(DISTINCT number) AS n FROM resource WHERE {self._PENDING}")
+    def new_unhandled_count(self, since: float) -> int:
+        """最近新出现、还待挑选的作品数 (导航角标)."""
+        row = self._one(
+            "SELECT COUNT(DISTINCT number) AS n FROM ("
+            f" SELECT number FROM resource WHERE {self._PENDING} AND crawled_at >= ?"
+            f" UNION SELECT number FROM release WHERE {self._UNHANDLED} AND first_seen >= ?)",
+            (since, since),
+        )
         return row["n"] if row else 0
 
     def dismiss_numbers(self, numbers: list[str]) -> int:
-        if not numbers:
-            return 0
+        with self._tx() as c:
+            return sum(c.execute("INSERT OR IGNORE INTO dismissed(number, at) VALUES(?, ?)", (n, time.time())).rowcount for n in numbers)
+
+    def undismiss_numbers(self, numbers: list[str]) -> None:
+        with self._tx() as c:
+            c.executemany("DELETE FROM dismissed WHERE number = ?", [(n,) for n in numbers])
+
+    def dismissed_numbers(self, numbers: Iterable[str]) -> set[str]:
+        return {r["number"].upper() for r in self._in_chunks("SELECT number FROM dismissed WHERE number IN ({})", numbers)}
+
+    def wanted_by_numbers(self, numbers: Iterable[str]) -> dict[str, Wanted]:
+        return {r["number"].upper(): Wanted.from_row(r) for r in self._in_chunks("SELECT * FROM wanted WHERE number IN ({})", numbers)}
+
+    # --- 磁力订阅 ---
+
+    def add_source(self, src: MagnetSource) -> MagnetSource:
         with self._tx() as c:
             cur = c.execute(
-                f"UPDATE resource SET dismissed = 1 WHERE wanted_id IS NULL AND number IN ({','.join('?' * len(numbers))})",
-                numbers,
+                "INSERT INTO magnet_source(kind, name, params, filter, enabled, auto_download, created_at) VALUES(?, ?, ?, ?, ?, ?, ?)",
+                (
+                    src.kind, src.name, json.dumps(src.params, ensure_ascii=False), json.dumps(asdict(src.filter), ensure_ascii=False),
+                    int(src.enabled), int(src.auto_download), time.time(),
+                ),
             )
-            return cur.rowcount
+            row = c.execute("SELECT * FROM magnet_source WHERE id = ?", (cur.lastrowid,)).fetchone()
+        return MagnetSource.from_row(row)
+
+    def source(self, source_id: int) -> MagnetSource | None:
+        row = self._one("SELECT * FROM magnet_source WHERE id = ?", (source_id,))
+        return MagnetSource.from_row(row) if row else None
+
+    def sources(self, *, kind: str | None = None, enabled_only: bool = False) -> list[MagnetSource]:
+        sql, params = (
+            "SELECT s.*, (SELECT COUNT(*) FROM resource r WHERE r.source_id = s.id) AS found FROM magnet_source s WHERE 1=1",
+            [],
+        )
+        if kind:
+            sql += " AND kind = ?"
+            params.append(kind)
+        if enabled_only:
+            sql += " AND enabled = 1"
+        return [MagnetSource.from_row(r) for r in self._all(sql + " ORDER BY kind, id", params)]
+
+    def update_source(self, source_id: int, **fields: Any) -> None:
+        if not fields:
+            return
+        values = []
+        for k, v in fields.items():
+            if k == "filter":
+                v = json.dumps(asdict(v), ensure_ascii=False)
+            elif k == "params":
+                v = json.dumps(v, ensure_ascii=False)
+            elif isinstance(v, bool):
+                v = int(v)
+            values.append(v)
+        with self._tx() as c:
+            c.execute(f"UPDATE magnet_source SET {', '.join(f'{k} = ?' for k in fields)} WHERE id = ?", (*values, source_id))
+
+    def delete_source(self, source_id: int) -> None:
+        """删除订阅; 已入池的磁力保留."""
+        with self._tx() as c:
+            c.execute("DELETE FROM magnet_source WHERE id = ?", (source_id,))
+            c.execute("DELETE FROM source_seen WHERE source_id = ?", (source_id,))
+            c.execute("UPDATE resource SET source_id = NULL WHERE source_id = ?", (source_id,))
+
+    def mark_seen(self, source_id: int, key: str) -> None:
+        """记下被入池条件过滤掉的条目, 之后不再打开, 也作为「翻到已见过的就停」的依据."""
+        with self._tx() as c:
+            c.execute("INSERT OR IGNORE INTO source_seen(source_id, key) VALUES(?, ?)", (source_id, key))
+
+    def is_seen(self, source_id: int, key: str) -> bool:
+        return self._one("SELECT 1 FROM source_seen WHERE source_id = ? AND key = ?", (source_id, key)) is not None
 
     def pool_counts(self, numbers: Iterable[str]) -> dict[str, int]:
         """番号 (大写) → 磁力池里带磁力的资源数."""

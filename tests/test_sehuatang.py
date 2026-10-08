@@ -11,10 +11,10 @@ from conftest import fixture_text
 from kumo import service as service_module
 from kumo.db import Repo
 from kumo.magnets import SiteError
-from kumo.models import Resource, Tag, WantedStatus
+from kumo.models import MagnetSource, Resource, SourceFilter, Tag, WantedStatus
 from kumo.sehuatang import Sehuatang, ThreadDetail, ThreadRef, forum_path, is_age_gate, parse_forum, parse_thread
-from kumo.service import Service, _accepts
-from kumo.settings import CrawlForum, Env, Settings
+from kumo.service import Service
+from kumo.settings import Env, Settings
 from kumo.web import create_app
 
 # --- 解析 ---
@@ -142,24 +142,29 @@ def forum(monkeypatch: pytest.MonkeyPatch) -> type[FakeForum]:
     return FakeForum
 
 
-def crawl_settings(**forum_kw: object) -> Settings:
-    return Settings(
-        app_id="test", download_path="/云下载", sites=["sehuatang"], crawl_enabled=True, crawl_pages=3,
-        crawl_forums=[CrawlForum(fid=103, **forum_kw)],  # type: ignore[arg-type]
+def forum_source(service: Service, fid: int = 103, typeid: int | None = None, *, enabled: bool = True,
+                 auto: bool = False, **flt: object) -> MagnetSource:
+    service.repo.save_settings(Settings(app_id="test", download_path="/云下载", sites=["sehuatang"], crawl_pages=3))
+    src = service.repo.add_source(
+        MagnetSource(kind="sehuatang", name=f"板块 {fid}", params={"fid": fid, "typeid": typeid}, enabled=enabled,
+                     auto_download=auto, filter=SourceFilter(**flt))  # type: ignore[arg-type]
     )
+    assert src.id
+    return src
 
 
 async def test_crawl_indexes_new_threads_and_stops_at_seen(service: Service, forum: type[FakeForum]) -> None:
-    service.repo.save_settings(crawl_settings())
+    src = forum_source(service)
     forum.pages[103] = [[ref(3, "MNGS-005 新"), ref(2, "BF-042-C 新")], [ref(1, "OLD-001")]]
     forum.details = {3: detail(3, "MNGS-005 新"), 2: detail(2, "BF-042-C 新", magnet=False), 1: detail(1, "OLD-001")}
     await service.run_crawl()
     items = {r.tid: r for r in service.repo.resources()}
     assert set(items) == {1, 2, 3}
     assert items[3].number == "MNGS-005" and items[3].subtitle and items[3].info_hash == f"{3:040d}"
-    assert items[3].type_id == 480
+    assert items[3].type_id == 480 and items[3].source_id == src.id and Tag.SUBTITLE in items[3].tags
     assert items[2].magnet is None
-    assert service.repo.list_wanted() == []  # 默认只入库, 不下载
+    assert service.repo.list_wanted() == []  # 默认只入池, 等挑选
+    assert (s := service.repo.source(src.id or 0)) and s.last_run and not s.last_error  # type: ignore[union-attr]
 
     # 第二轮: 第一页出现已爬过的帖子, 不再翻页.
     forum.page_calls.clear()
@@ -171,7 +176,7 @@ async def test_crawl_indexes_new_threads_and_stops_at_seen(service: Service, for
 
 
 async def test_crawl_skips_failed_thread_and_retries_later(service: Service, forum: type[FakeForum]) -> None:
-    service.repo.save_settings(crawl_settings())
+    forum_source(service)
     forum.pages[103] = [[ref(5, "ABC-005")]]
     forum.details[5] = detail(5, "ABC-005")
     forum.failing = {5}
@@ -184,44 +189,89 @@ async def test_crawl_skips_failed_thread_and_retries_later(service: Service, for
 
 
 async def test_crawl_target_with_typeid(service: Service, forum: type[FakeForum]) -> None:
-    s = crawl_settings()
-    s.crawl_forums = [CrawlForum(fid=36, typeid=369)]
-    service.repo.save_settings(s)
+    forum_source(service, 36, 369)
     await service.run_crawl()
     assert forum.page_calls == [(36, 1, 369)]
 
 
-async def test_crawl_disabled_does_nothing(service: Service, forum: type[FakeForum]) -> None:
-    service.repo.save_settings(Settings(crawl_enabled=False))
-    await service.run_crawl()
+async def test_disabled_source_only_runs_when_asked(service: Service, forum: type[FakeForum]) -> None:
+    src = forum_source(service, enabled=False)
+    forum.pages[103] = [[ref(60, "ABC-060")]]
+    forum.details[60] = detail(60, "ABC-060")
+    await service.run_crawl()  # 定时任务只爬启用的
     assert forum.page_calls == []
+    await service.run_crawl(source_id=src.id)  # 订阅上点「立即爬取」: 停用的也爬
+    assert service.repo.resource_exists("sehuatang", 60)
 
 
-async def test_auto_download_respects_filters(service: Service, forum: type[FakeForum]) -> None:
-    service.repo.save_settings(crawl_settings(auto_download=True, types=["有码高清"], exclude_keywords=["预告"]))
-    forum.pages[103] = [[ref(10, "AAA-010", "有码高清"), ref(11, "BBB-011", "无码高清"), ref(12, "CCC-012 预告"), ref(13, "西洋片 无番号")]]
-    for tid, title in ((10, "AAA-010"), (11, "BBB-011"), (12, "CCC-012 预告"), (13, "西洋片 无番号")):
-        forum.details[tid] = detail(tid, title)
-    await service.run_crawl()
-    wanted = {w.number: w for w in service.repo.list_wanted()}
-    assert set(wanted) == {"AAA-010"}
-    assert wanted["AAA-010"].status is WantedStatus.QUEUED
-    assert wanted["AAA-010"].source == "sehuatang:103"
+async def test_filter_by_title_before_opening_thread(service: Service, forum: type[FakeForum]) -> None:
+    """亚洲无码板块只要破解: 列表标题不符合的不打开帖子, 记为见过, 下次也不再看."""
+    src = forum_source(service, 36, tags_any=["leak"])
+    forum.pages[36] = [[
+        ref(70, "HMN-904 [新模型无码破解]我的巨乳", "无码高清"),
+        ref(71, "HEYZO-3381 [自提征用]责备和被责备", "无码高清"),
+        ref(72, "[中文字幕]Vixen.26.09.24.Dolly V酒店", "无码高清"),
+    ]]
+    forum.details = {70: detail(70, "HMN-904 [新模型无码破解]我的巨乳"), 71: detail(71, "x"), 72: detail(72, "y")}
+    opened: list[int] = []
+    original = FakeForum.thread
+
+    async def thread(self: FakeForum, fetcher: object, tid: int) -> ThreadDetail:
+        opened.append(tid)
+        return await original(self, fetcher, tid)
+
+    FakeForum.thread = thread  # type: ignore[method-assign]
+    try:
+        await service.run_crawl()
+    finally:
+        FakeForum.thread = original  # type: ignore[method-assign]
+    assert opened == [70]
+    (r,) = service.repo.resources()
+    assert r.number == "HMN-904" and r.tags == {"leak"} and r.brackets == ["新模型无码破解"]
+    assert service.repo.is_seen(src.id or 0, "71") and service.repo.is_seen(src.id or 0, "72")
 
 
 @pytest.mark.parametrize(
-    ("forum_cfg", "title", "typ", "expected"),
+    ("flt", "title", "typ", "expected"),
     [
-        (CrawlForum(fid=1), "ABC-001", "有码高清", True),
-        (CrawlForum(fid=1, types=["无码高清"]), "ABC-001", "有码高清", False),
-        (CrawlForum(fid=1, include_keywords=["中文"]), "ABC-001 中文", "", True),
-        (CrawlForum(fid=1, include_keywords=["中文"]), "ABC-001", "", False),
-        (CrawlForum(fid=1, exclude_keywords=["VR"]), "ABC-001 vr版", "", False),
+        ({}, "ABC-001", "有码高清", True),
+        ({"types": ["无码高清"]}, "ABC-001", "有码高清", False),
+        ({"include": ["中文"]}, "ABC-001 中文", "", True),
+        ({"include": ["中文"]}, "ABC-001", "", False),
+        ({"exclude": ["VR"]}, "ABC-001 vr版", "", False),
+        ({"tags_any": ["leak"]}, "ABF-386 [新模型无码破解]x", "", True),
+        ({"tags_any": ["leak"]}, "HEYZO-3381 [自提征用]x", "", False),
+        ({"tags_none": ["western"]}, "[中文字幕]Blacked.26.09.25.Gizelle", "", False),
+        ({"brackets": ["破解"]}, "ABF-386 [新模型无码破解]x", "", True),
+        ({"brackets": ["破解"]}, "ABF-386 破解 x", "", False),
+        ({"numbered": True}, "没有番号的合集", "", False),
     ],
 )
-def test_accepts(forum_cfg: CrawlForum, title: str, typ: str, expected: bool) -> None:
-    r = Resource(source="sehuatang", tid=1, forum_id=1, forum_name="", type_name=typ, title=title)
-    assert _accepts(forum_cfg, r) is expected
+def test_source_filter(flt: dict[str, object], title: str, typ: str, expected: bool) -> None:
+    from kumo.numbers import extract_number
+    from kumo.select import brackets, title_tags
+
+    number = extract_number(title)
+    assert SourceFilter(**flt).accepts(title, title_tags(title, number), brackets(title), typ, number) is expected  # type: ignore[arg-type]
+
+
+async def test_auto_download_respects_filters_and_rules(service: Service, forum: type[FakeForum]) -> None:
+    service.repo.save_settings(Settings(app_id="test", download_path="/云下载", size_max_gb=12))
+    forum_source(service, auto=True, types=["有码高清"], exclude=["预告"])
+    service.repo.save_settings(Settings(app_id="test", download_path="/云下载", size_max_gb=4))
+    forum.pages[103] = [[ref(10, "AAA-010", "有码高清"), ref(11, "BBB-011", "无码高清"), ref(12, "CCC-012 预告")]]
+    for tid, title in ((10, "AAA-010"), (11, "BBB-011"), (12, "CCC-012 预告")):
+        forum.details[tid] = detail(tid, title)
+    await service.run_crawl()
+    assert service.repo.list_wanted() == []  # 5GB 超出选择规则的上限, 只入池
+    assert [r.tid for r in service.repo.resources()] == [10]  # 其余不符合入池条件
+
+    service.repo.save_settings(Settings(app_id="test", download_path="/云下载", size_max_gb=12))
+    forum.pages[103] = [[ref(13, "DDD-013", "有码高清"), ref(10, "AAA-010", "有码高清")]]
+    forum.details[13] = detail(13, "DDD-013")
+    await service.run_crawl()
+    (w,) = service.repo.list_wanted()
+    assert w.number == "DDD-013" and w.status is WantedStatus.QUEUED and w.source == "sehuatang:103"
 
 
 # --- 资源库用于搜索与手动下载 ---
@@ -277,26 +327,17 @@ def test_download_resource_does_not_override_submitted(service: Service) -> None
 # --- 网页 ---
 
 
-def test_resources_page_and_settings(service: Service, tmp_path: Path) -> None:
-    r = add_res(service, 50, "ABC-050 标题", "ABC-050")
+def test_resources_page(service: Service, tmp_path: Path) -> None:
+    r = add_res(service, 50, "ABC-050 [新模型无码破解]标题", "ABC-050")
     with TestClient(create_app(Env(data_dir=tmp_path, password=""), service=service)) as c:
         page = c.get("/resources")
-        assert page.status_code == 200 and "ABC-050 标题" in page.text and "论坛爬取未启用" in page.text
+        assert page.status_code == 200 and "ABC-050 [新模型无码破解]标题" in page.text and "还没有启用的磁力订阅" in page.text
+        assert ">破解<" in page.text  # 旧数据也补上了标签
+        assert "ABC-050" in c.get("/resources?tag=leak").text and "ABC-050" not in c.get("/resources?tag=western").text
         assert c.get("/resources?forum=103&q=ABC").status_code == 200
         resp = c.post(f"/resources/{r.id}/download", follow_redirects=False)
         assert resp.status_code == 303 and resp.headers["location"].startswith("/wanted/")
         assert c.post("/resources/99999/download").status_code == 400
-
-        form = {"crawl_enabled": "on", "crawl_forums": "103 | 自动 | 有码高清 | | 预告\n36\n36:369 | 入库\n", "crawl_pages": "3"}
-        assert "已保存" in c.post("/settings", data=form).text
-        s = service.repo.settings()
-        assert s.crawl_enabled and s.crawl_pages == 3
-        assert s.crawl_forums[0] == CrawlForum(fid=103, auto_download=True, types=["有码高清"], exclude_keywords=["预告"])
-        assert s.crawl_forums[1] == CrawlForum(fid=36)
-        assert s.crawl_forums[2] == CrawlForum(fid=36, typeid=369)
-        assert "36:369 | 入库" in c.get("/settings").text
-        for bad in ("abc | 自动", "36:x", "36:"):
-            assert "保存失败" in c.post("/settings", data={**form, "crawl_forums": bad}).text, bad
 
 
 # --- 按参数输出 RSS ---
@@ -381,30 +422,37 @@ def test_old_database_gets_type_id_column(tmp_path: Path) -> None:
     assert old.title == "old" and old.type_id is None
 
 
-# --- 手动「立即爬取」 ---
+# --- 爬取出错 ---
 
 
-async def test_manual_crawl_runs_even_when_schedule_disabled(service: Service, forum: type[FakeForum]) -> None:
-    s = crawl_settings()
-    s.crawl_enabled = False
-    service.repo.save_settings(s)
-    forum.pages[103] = [[ref(60, "ABC-060")]]
-    forum.details[60] = detail(60, "ABC-060")
-    await service.run_crawl()  # 定时任务: 未启用, 不爬
-    assert forum.page_calls == []
-    await service.run_crawl(force=True)  # 网页上手动点: 照样爬
-    assert service.repo.resource_exists("sehuatang", 60)
+async def test_source_error_is_recorded_and_others_continue(service: Service, forum: type[FakeForum]) -> None:
+    bad = forum_source(service, 36)
+    good = forum_source(service, 103)
+    forum.pages[103] = [[ref(80, "ABC-080")]]
+    forum.details[80] = detail(80, "ABC-080")
+    original = FakeForum.forum_page
 
+    async def forum_page(self: FakeForum, fetcher: object, fid: int, page: int, typeid: int | None = None) -> object:
+        if fid == 36:
+            raise SiteError("板块不存在")
+        return await original(self, fetcher, fid, page, typeid)
 
-async def test_crawl_without_targets_reports_error(service: Service, forum: type[FakeForum]) -> None:
-    service.repo.save_settings(Settings(crawl_enabled=True, crawl_forums=[]))
-    await service.run_guarded("crawl", lambda: service.run_crawl(force=True))
-    assert "没有配置爬取目标" in service.last_error["crawl"]
-    assert service.running == {}
+    FakeForum.forum_page = forum_page  # type: ignore[method-assign]
+    try:
+        await service.run_guarded("crawl", service.run_crawl)
+    finally:
+        FakeForum.forum_page = original  # type: ignore[method-assign]
+    assert service.repo.resource_exists("sehuatang", 80)
+    assert (b := service.repo.source(bad.id or 0)) and b.last_error == "板块不存在"
+    assert (g := service.repo.source(good.id or 0)) and not g.last_error
+    assert "板块不存在" in service.last_error["crawl"]
 
 
 def test_run_button_gives_feedback(service: Service, tmp_path: Path) -> None:
     with TestClient(create_app(Env(data_dir=tmp_path, password=""), service=service)) as c:
+        r = c.post("/run/crawl", headers={"referer": "http://testserver/resources?forum=36"}, follow_redirects=False)
+        assert "没有启用的论坛 sehuatang磁力订阅" in c.get(r.headers["location"]).text
+        forum_source(service)
         r = c.post("/run/crawl", headers={"referer": "http://testserver/resources?forum=36&flash=old"}, follow_redirects=False)
         location = r.headers["location"]
         assert location.startswith("/resources?forum=36&flash=") and location.count("flash=") == 1

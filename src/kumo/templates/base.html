@@ -261,7 +261,7 @@ label.tile.queued .pick { display: none; }
 @media (prefers-color-scheme: dark) { .src.amane { color: #c39be8; } }
 .tile .flags { display: flex; gap: 4px; flex-wrap: wrap; }
 
-/* 磁力池: 确认影片 */
+/* 卡片式磁力列表 */
 .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); margin-bottom: 16px; }
 .tabs a { padding: 8px 14px; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; }
 .tabs a:hover { color: var(--fg); text-decoration: none; }
@@ -296,6 +296,32 @@ label.tile.queued .pick { display: none; }
   .magnets label { grid-template-columns: 18px minmax(0, 1fr); }
   .magnets .meta { grid-column: 2; }
 }
+/* 勾选型标签筛选 */
+.chips { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.chips label { display: inline-flex; margin: 0; cursor: pointer; }
+.chips input { position: absolute; opacity: 0; pointer-events: none; }
+.chips label span { padding: 2px 10px; border-radius: 999px; border: 1px solid var(--line-strong); color: var(--muted); font-size: 12.5px; }
+.chips label:hover span { border-color: var(--faint); color: var(--fg); }
+.chips input:checked + span { background: var(--accent-soft); color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); font-weight: 600; }
+.chips input.neg:checked + span { background: color-mix(in srgb, var(--bad) 9%, transparent); color: var(--bad); border-color: color-mix(in srgb, var(--bad) 40%, transparent); }
+.chips .k { font-size: 12px; color: var(--faint); margin-right: 2px; min-width: 52px; }
+.chips input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* 磁力订阅卡片 */
+.src-card { padding: 0; overflow: hidden; }
+.src-card .top { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding: 14px 18px; }
+.src-card .top .name { font-weight: 650; font-size: 15px; }
+.src-card.off .top .name { color: var(--faint); }
+.src-card .meta { display: flex; gap: 6px 14px; flex-wrap: wrap; font-size: 12.5px; color: var(--muted); padding: 0 18px 12px; }
+.src-card details > summary { list-style: none; cursor: pointer; }
+.src-card details > summary::-webkit-details-marker { display: none; }
+.src-card .edit { border-top: 1px solid var(--line); padding: 14px 18px; background: var(--surface-2); }
+.kind { font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 5px; background: var(--surface-2); border: 1px solid var(--line); color: var(--muted); }
+.switch { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); }
+.switch b { width: 30px; height: 18px; border-radius: 9px; background: var(--line-strong); position: relative; transition: background .15s; }
+.switch b::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #fff; transition: left .15s; }
+.switch.on b { background: var(--ok); }
+.switch.on b::after { left: 14px; }
+button.switch { border: 0; background: none; padding: 2px 4px; }
 .lvl { font-family: var(--mono); font-size: 11.5px; font-weight: 600; text-transform: uppercase; }
 .lvl-warning, .lvl-warn { color: var(--warn); }
 .lvl-error { color: var(--bad); }
@@ -314,12 +340,13 @@ label.tile.queued .pick { display: none; }
     <svg viewBox="0 0 32 32"><rect width="32" height="32" rx="8" fill="var(--accent)"/><path d="M10 21h12a4 4 0 0 0 .4-8 6 6 0 0 0-11.5-1.4A4.8 4.8 0 0 0 10 21z" fill="var(--accent-fg)"/></svg>
     kumo<small>{{ version }}</small></a>
   <nav class="nav">
-    <div class="nav-group" title="订阅资料站获取作品 → 搜磁力 → 选磁力 → 115">片源 · 找作品</div>
+    <div class="nav-group">订阅</div>
+    {{ nav('/subscriptions', '片源订阅', '<path d="M4 11a9 9 0 0 1 9 9M4 4a16 16 0 0 1 16 16"/><circle cx="5" cy="19" r="1.5"/>') }}
+    {{ nav('/sources', '磁力订阅', '<path d="M6 3v8a6 6 0 0 0 12 0V3M6 7h4M14 7h4"/>') }}
     {{ nav('/actresses', '女优', '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>') }}
-    {{ nav('/releases', '作品', '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 9h18M8 5v4M16 5v4"/>') }}
-    {{ nav('/subscriptions', '订阅', '<path d="M4 11a9 9 0 0 1 9 9M4 4a16 16 0 0 1 16 16"/><circle cx="5" cy="19" r="1.5"/>') }}
-    <div class="nav-group" title="爬取优质磁力 → 识别番号 → 确认影片 → 115">磁力 · 找资源</div>
-    <a href="/pool" class="{{ 'on' if request.url.path.startswith('/pool') or request.url.path.startswith('/resources') }}"><svg viewBox="0 0 24 24"><path d="M6 3v8a6 6 0 0 0 12 0V3M6 7h4M14 7h4"/></svg>磁力池{% if pool_pending %}<span class="count-pill">{{ pool_pending }}</span>{% endif %}</a>
+    <div class="nav-group">挑选</div>
+    <a href="/works" class="{{ 'on' if request.url.path.startswith('/works') }}" title="最近 7 天新出现、待挑选的作品"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 9h18M8 5v4M16 5v4"/></svg>挑选作品{% if todo_new %}<span class="count-pill">{{ todo_new }}</span>{% endif %}</a>
+    {{ nav('/resources', '全部磁力', '<path d="M4 6h16M4 12h16M4 18h10"/>') }}
     <div class="nav-group">115 · 下载</div>
     <a href="/" class="{{ 'on' if request.url.path == '/' or request.url.path.startswith('/wanted') }}"><svg viewBox="0 0 24 24"><path d="M12 3v12m0 0-4-4m4 4 4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>下载队列</a>
     {{ nav('/library', '目录同步', '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>') }}

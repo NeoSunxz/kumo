@@ -1,0 +1,10 @@
+{# 两种订阅汇合后的流程; step 是当前所在的一步 #}
+{% macro flow(step, origin='') -%}
+<div class="flow" style="margin-top:6px">
+  <span class="{{ 'on' if step == 'subscribe' }}">{{ {'subs': '片源订阅', 'magnet': '磁力订阅'}.get(origin, '片源 / 磁力订阅') }}</span>→
+  <span class="{{ 'on' if step == 'identify' }}">识别作品</span>→
+  <span class="{{ 'on' if step == 'pick' }}">挑选作品</span>→
+  <span class="{{ 'on' if step == 'choose' }}">磁力选择</span>→
+  <span class="{{ 'on' if step == 'download' }}">115 云下载</span>
+</div>
+{%- endmacro %}

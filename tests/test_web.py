@@ -44,16 +44,16 @@ def test_settings_roundtrip_and_validation(service: Service, tmp_path: Path) -> 
         form = {
             "app_id": " 123 ", "download_path": "/云下载", "sync_paths": "/影片\n\n/其它\n",
             "site_sukebei": "on", "size_min_gb": "1", "size_max_gb": "10", "prefer_subtitle": "on",
-            "exclude_keywords": "sample, 预告", "input_feeds": "https://a/rss | 中文 | 4K\nhttps://b/rss",
-            "submit_batch": "3",
+            "exclude_keywords": "sample, 预告", "submit_batch": "3",
+            # 设置页表单带的标记: 勾选框没勾时不提交, 靠它们知道要设成关
+            "_sites": "1", "_checkboxes": "prefer_subtitle,require_subtitle,allow_4k,avoid_h265",
         }
         r = c.post("/settings", data=form)
         assert "已保存" in r.text
         s = service.repo.settings()
         assert s.app_id == "123" and s.sync_paths == ["/影片", "/其它"] and s.sites == ["sukebei"]
         assert s.exclude_keywords == ["sample", "预告"] and not s.avoid_h265
-        assert s.input_feeds[0].include_keywords == ["中文"] and s.input_feeds[0].exclude_keywords == ["4K"]
-        assert s.input_feeds[1].url == "https://b/rss" and s.submit_batch == 3
+        assert s.submit_batch == 3 and s.prefer_subtitle
 
         r = c.post("/settings", data={**form, "submit_batch": "999"})
         assert "保存失败" in r.text

@@ -1,12 +1,13 @@
 """调度与业务流程.
 
-kumo 有两条找片的路径, 汇合到同一个下载队列:
+kumo 有两种订阅, 在「挑选作品」汇合, 之后走同一条路:
 
-- 片源: 订阅资料站 (女优 / 系列 / 片商 / 标签) 得到作品 → 加入队列后按番号搜磁力 → 选择磁力 → 115.
-- 磁力: 论坛与 sukebei 按规则爬取磁力进入磁力池 → 识别番号 → 确认影片 (或按来源自动) → 115.
+- 片源订阅: 资料站的女优 / 系列 / 片商 / 标签 → 作品
+- 磁力订阅: 论坛板块 / sukebei / RSS 按入池条件爬取磁力 → 识别番号与标签 → 作品
+- 挑选作品 (两边按番号合并) → 加入下载队列 → 磁力选择 (磁力池 + 按番号搜索, 按规则打分) → 115 云下载
 
-两边按番号共享数据: 磁力池同时是搜磁力的来源之一, 作品信息 (海报、封面、演员) 从 Amane 按番号缓存,
-两边页面都用它填充.
+磁力订阅开了「自动」的跳过挑选, 直接进下载队列. 作品信息 (海报、封面、演员) 从 Amane 按番号缓存,
+各页面都用它填充.
 
 一个番号的生命周期: pending → (搜索) → queued / need_choice / no_magnet → (提交) → submitted
 → downloading → done / failed. 任何阶段只要 115 目录同步发现已有该番号, 未提交的条目转为 owned.
@@ -17,10 +18,13 @@ kumo 有两条找片的路径, 汇合到同一个下载队列:
 from __future__ import annotations
 
 import asyncio
+import email.utils
+import hashlib
 import logging
 import re
 import time
 from collections.abc import Callable
+from typing import Any
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
@@ -31,14 +35,15 @@ from .db import Repo
 from .feeds import parse_feed, torrent_to_magnet
 from .magnets import SITES, Fetcher, SiteError, Sukebei, parse_sukebei_items
 from .models import (
-    AmaneActor, Candidate, LibraryFile, Release, Resource, Subscription, Tag, Wanted, WantedStatus, Work, info_hash_of,
+    AmaneActor, Candidate, LibraryFile, MagnetSource, Release, Resource, SourceFilter, Subscription, Tag, Wanted,
+    WantedStatus, Work, info_hash_of,
 )
 from .numbers import extract_number, has_subtitle_suffix
 from .pan115 import FakePan115, NotAuthorized, OpenClient, Pan115, Pan115Error
 from .sehuatang import Sehuatang
 from .subscriptions import SubscriptionKey, fetch_list, parse_subscription_url
-from .select import choose, detect_tags, evaluate, merge
-from .settings import CrawlForum, Settings, SukebeiRule
+from .select import brackets, choose, evaluate, merge, title_tags
+from .settings import Settings
 
 log = logging.getLogger("kumo")
 
@@ -62,6 +67,41 @@ class Service:
         self.last_error: dict[str, str] = {}
         self.running: dict[str, float] = {}
         """正在运行的任务与开始时间, 页面据此显示进度."""
+        self._migrate_sources()
+
+    def _migrate_sources(self) -> None:
+        """磁力订阅原先写在设置里 (论坛板块、sukebei 规则、输入 RSS), 第一次启动时搬到磁力订阅表."""
+        if self.repo.get_kv("sources_migrated"):
+            return
+        s = self.settings
+        # 板块列表有默认值, 只有当时开了定时爬取才算用户真的在用.
+        for f in s.crawl_forums if s.crawl_enabled else []:
+            self.repo.add_source(
+                MagnetSource(
+                    kind="sehuatang", name=f"板块 {f.fid}" + (f":{f.typeid}" if f.typeid else ""),
+                    params={"fid": f.fid, "typeid": f.typeid}, auto_download=f.auto_download,
+                    # 原来的分类 / 关键词只管自动下载; 现在是入池条件, 不开自动的不带过来, 以免少爬.
+                    filter=SourceFilter(types=f.types, include=f.include_keywords, exclude=f.exclude_keywords)
+                    if f.auto_download else SourceFilter(),
+                )
+            )
+        for r in s.sukebei_rules:
+            self.repo.add_source(
+                MagnetSource(
+                    kind="sukebei", name=r.name, auto_download=r.auto_download,
+                    params={"query": r.query, "user": r.user, "category": r.category, "trusted_only": r.trusted_only,
+                            "min_seeders": r.min_seeders},
+                    filter=SourceFilter(include=r.include_keywords, exclude=r.exclude_keywords),
+                )
+            )
+        for feed in s.input_feeds:
+            self.repo.add_source(
+                MagnetSource(
+                    kind="rss", name=feed.url.split("//")[-1][:40], params={"url": feed.url}, auto_download=True,
+                    filter=SourceFilter(include=feed.include_keywords, exclude=feed.exclude_keywords),
+                )
+            )
+        self.repo.set_kv("sources_migrated", "1")
 
     # --- 115 客户端 ---
 
@@ -300,39 +340,55 @@ class Service:
         added, _ = self.add_numbers(numbers, source="新作")
         return added
 
-    # --- 磁力池: 确认影片 ---
+    # --- 挑选作品: 片源与磁力两边按番号合并 ---
 
-    def pool_groups(self, *, sources: list[str] | None = None, search: str = "") -> list[PoolGroup]:
-        """待确认的磁力按番号分组; 每组的磁力按选择规则打分, 默认选最高分的."""
-        s = self.settings
-        groups: dict[str, list[Resource]] = {}
-        for r in self.repo.pool_pending(sources=sources, search=search):
-            assert r.number
-            groups.setdefault(r.number.upper(), []).append(r)
-        works = self.repo.works(groups)
-        releases = self.repo.releases_by_numbers(groups)
-        out = []
-        for key, resources in groups.items():
-            scored = []
-            for r in resources:
-                cand = _resource_candidate(r)
-                evaluate(cand, key, s)
-                scored.append(PooledMagnet(resource=r, tags=cand.tags, score=cand.score, rejected=cand.rejected))
-            scored.sort(key=lambda m: (not m.rejected, m.score, m.resource.seeders or 0), reverse=True)
-            out.append(PoolGroup(number=resources[0].number or key, magnets=scored, work=works.get(key), release=releases.get(key)))
+    def works(
+        self, *, origin: str = "", sub_ids: list[int] | None = None, source_ids: list[int] | None = None,
+        tags: list[str] | None = None, search: str = "", days: int | None = None, todo: bool = True, limit: int = 300,
+    ) -> list[WorkItem]:
+        """``origin``: ``subs`` 只看片源订阅, ``magnet`` 只看磁力订阅, 空为两边都看. ``todo`` 只看待挑选的."""
+        items: dict[str, WorkItem] = {}
+        if origin in ("", "subs") and not source_ids:
+            for rel, subs_name, _, _ in self.repo.releases(sub_ids=sub_ids, search=search, days=days, limit=3000):
+                key = rel.number.upper()
+                items[key] = WorkItem(number=rel.number, release=rel, subs_name=subs_name)
+        if origin in ("", "magnet") and not sub_ids:
+            names = {src.id: src.name for src in self.repo.sources()}
+            only_pool = origin == "magnet" or bool(tags)
+            for r in self.repo.pool_resources(source_ids=source_ids, search=search, days=None if not only_pool else days):
+                assert r.number
+                key = r.number.upper()
+                item = items.get(key)
+                if item is None:
+                    if not only_pool and days and not _recent(r, days):
+                        continue
+                    item = items[key] = WorkItem(number=r.number)
+                item.magnets.append(r)
+                if r.source_id in names and names[r.source_id] not in item.sources:
+                    item.sources.append(names[r.source_id])
+        if tags:
+            items = {k: v for k, v in items.items() if set(tags) <= v.tags}
+        wanted = self.repo.wanted_by_numbers(items)
+        owned = self.repo.owned_numbers(items)
+        dismissed = self.repo.dismissed_numbers(items)
+        for key, item in items.items():
+            item.wanted = wanted.get(key)
+            item.owned = key in owned
+            item.dismissed = key in dismissed
+        out = [i for i in items.values() if not todo or not (i.wanted or i.owned or i.dismissed)]
+        out.sort(key=lambda i: i.date or "", reverse=True)
+        out = out[:limit]
+        works = self.repo.works(i.number for i in out)
+        for item in out:
+            item.work = works.get(item.number.upper())
         return out
 
-    def confirm_pool(self, picks: list[int]) -> int:
-        """确认影片: 用选中的磁力 (资源编号) 加入下载队列; 返回处理的数量."""
-        done = 0
-        for resource_id in picks:
-            try:
-                self.download_resource(resource_id)
-                done += 1
-            except ValueError as exc:
-                self.repo.log("warning", f"确认影片失败 (资源 {resource_id}): {exc}")
-        return done
+    def queue_numbers(self, numbers: list[str]) -> int:
+        """挑选的作品加入下载队列, 之后自动磁力选择; 返回新加入的数量."""
+        added, _ = self.add_numbers(numbers, source="挑选")
+        return added
 
+    # --- 定时任务 ---
     # --- 定时任务 ---
 
     async def run_search(self) -> None:
@@ -425,136 +481,177 @@ class Service:
                     self.repo.update_wanted(w.id, status=WantedStatus.OWNED, note="115 目录中已有")
             self._sync_requested = False
 
-    async def run_feeds(self) -> None:
-        async with self._locks["feeds"]:
-            s = self.settings
-            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as http:
-                for feed in s.input_feeds:
-                    try:
-                        resp = await http.get(feed.url)
-                        entries = parse_feed(resp.text)
-                    except (httpx.HTTPError, ValueError) as exc:
-                        self.repo.log("warning", f"读取 RSS 失败 {feed.url}: {exc}")
-                        continue
-                    for entry in entries:
-                        lowered = entry.title.lower()
-                        if feed.include_keywords and not any(k.lower() in lowered for k in feed.include_keywords):
-                            continue
-                        if any(k.lower() in lowered for k in feed.exclude_keywords):
-                            continue
-                        if not self.repo.mark_feed_seen(feed.url, entry.key):
-                            continue
-                        if entry.number is None:
-                            self.repo.log("warning", f"RSS 条目无法识别番号, 已跳过: {entry.title[:80]}")
-                            continue
-                        magnet = entry.magnet
-                        if magnet is None and entry.torrent_url:
-                            try:
-                                torrent = await http.get(entry.torrent_url)
-                                magnet = torrent_to_magnet(torrent.content, entry.title)
-                            except (httpx.HTTPError, ValueError) as exc:
-                                self.repo.log("warning", f"种子下载或解析失败 {entry.title[:60]}: {exc}")
-                        added, _ = self.add_numbers([entry.number], source="rss")
-                        w = self.repo.wanted_by_number(entry.number)
-                        if added and magnet and w is not None and w.status is WantedStatus.PENDING:
-                            self.add_magnet(w.id, magnet, entry.title)
+    def _pool(self, src: MagnetSource, res: Resource) -> None:
+        """新磁力入池; 订阅开了自动的, 有番号且符合磁力选择规则就直接进下载队列."""
+        stored = self.repo.add_resource(res)
+        if not (src.auto_download and stored.id and stored.number):
+            return
+        if not stored.magnet:
+            self.add_numbers([stored.number], source=f"自动:{src.name}")
+            return
+        cand = _resource_candidate(stored)
+        evaluate(cand, stored.number, self.settings)
+        if not cand.rejected:
+            self.download_resource(stored.id)
 
-    async def run_crawl(self, *, force: bool = False) -> None:
-        """``force``: 网页上手动点「立即爬取」, 不受「启用定时爬取」开关限制 (开关只管定时任务)."""
+    def _sources(self, kind: str, source_id: int | None) -> list[MagnetSource]:
+        """要爬的订阅: 指定了编号就只爬那一个 (停用的也爬), 否则爬全部启用的."""
+        if source_id is not None:
+            src = self.repo.source(source_id)
+            return [src] if src and src.kind == kind else []
+        return self.repo.sources(kind=kind, enabled_only=True)
+
+    async def _run_sources(self, kind: str, source_id: int | None, crawl: Callable[[MagnetSource, Fetcher], Any]) -> None:
+        """逐个订阅爬取; 一个失败不影响其它, 错误记在订阅上, 最后一个错误也报给任务."""
+        s = self.settings
+        fetcher = Fetcher(proxy=s.scrape_proxy, flaresolverr_url=s.flaresolverr_url)
+        error: SiteError | None = None
+        try:
+            for i, src in enumerate(self._sources(kind, source_id)):
+                assert src.id is not None
+                if i:
+                    await asyncio.sleep(s.crawl_request_delay)
+                try:
+                    added = await crawl(src, fetcher)
+                except SiteError as exc:
+                    error = exc
+                    self.repo.update_source(src.id, last_error=str(exc), last_run=time.time())
+                    self.repo.log("warning", f"磁力订阅 {src.name}: {exc}")
+                    continue
+                self.repo.update_source(src.id, last_error="", last_run=time.time())
+                if added:
+                    self.repo.log("info", f"磁力订阅 {src.name}: 新入池 {added} 个")
+        finally:
+            await fetcher.aclose()
+        if error is not None:
+            raise error
+
+    async def run_crawl(self, *, source_id: int | None = None) -> None:
         async with self._locks["crawl"]:
-            s = self.settings
-            if not s.crawl_enabled and not force:
-                return
-            if not s.crawl_forums:
-                raise SiteError("没有配置爬取目标, 请在设置 → 论坛爬取里填写板块")
-            site = Sehuatang(s.crawl_base_url)
-            fetcher = Fetcher(proxy=s.scrape_proxy, flaresolverr_url=s.flaresolverr_url)
-            new_total = queued = 0
-            try:
-                for forum in s.crawl_forums:
-                    for page in range(1, s.crawl_pages + 1):
-                        forum_name, refs = await site.forum_page(fetcher, forum.fid, page, forum.typeid)
-                        fresh = [r for r in refs if not self.repo.resource_exists("sehuatang", r.tid)]
-                        for ref in fresh:
-                            await asyncio.sleep(s.crawl_request_delay)
-                            try:
-                                detail = await site.thread(fetcher, ref.tid)
-                            except SiteError as exc:
-                                # 不入库, 下一轮再试.
-                                self.repo.log("warning", f"sehuatang 帖子 {ref.tid} 读取失败: {exc}")
-                                continue
-                            title = detail.title or ref.title
-                            number = extract_number(title)
-                            res = self.repo.add_resource(
-                                Resource(
-                                    source="sehuatang", tid=ref.tid, forum_id=forum.fid, forum_name=forum_name,
-                                    type_id=ref.type_id, type_name=ref.type_name, title=title, number=number,
-                                    magnet=detail.magnet,
-                                    info_hash=info_hash_of(detail.magnet) if detail.magnet else None,
-                                    size=detail.size, posted=detail.posted or ref.posted,
-                                    subtitle="字幕" in forum_name or "中文字幕" in title
-                                    or bool(number and has_subtitle_suffix(title, number)),
-                                )
-                            )
-                            new_total += 1
-                            if forum.auto_download and _accepts(forum, res) and res.magnet and res.number and res.id:
-                                self.download_resource(res.id)
-                                queued += 1
-                        # 这一页里出现了已爬过的帖子, 更早的页不用再翻.
-                        if len(fresh) < len(refs) or not refs:
-                            break
-                        await asyncio.sleep(s.crawl_request_delay)
-            finally:
-                await fetcher.aclose()
-                if new_total:
-                    self.repo.log("info", f"sehuatang 爬取: 新帖 {new_total} 个, 自动下载 {queued} 个")
+            site = Sehuatang(self.settings.crawl_base_url)
+            await self._run_sources("sehuatang", source_id, lambda src, f: self._crawl_forum(site, src, f))
 
-    async def run_sukebei(self, *, force: bool = False) -> None:
-        """按规则读取 sukebei 的 RSS, 新磁力进入磁力池; 规则开了自动下载的, 符合选择规则的直接提交."""
+    async def _crawl_forum(self, site: Sehuatang, src: MagnetSource, fetcher: Fetcher) -> int:
+        """按发帖时间翻页; 列表标题不符合入池条件的不打开帖子, 遇到已见过的帖子即停止翻页."""
+        assert src.id is not None
+        s = self.settings
+        fid, typeid = int(src.params["fid"]), src.params.get("typeid")  # type: ignore[arg-type]
+        added = 0
+        for page in range(1, s.crawl_pages + 1):
+            if page > 1:
+                await asyncio.sleep(s.crawl_request_delay)
+            forum_name, refs = await site.forum_page(fetcher, fid, page, int(typeid) if typeid else None)  # type: ignore[arg-type]
+            known = 0
+            for ref in refs:
+                key = str(ref.tid)
+                if self.repo.resource_exists("sehuatang", ref.tid) or self.repo.is_seen(src.id, key):
+                    known += 1
+                    continue
+                number = extract_number(ref.title)
+                if not src.filter.accepts(ref.title, title_tags(ref.title, number), brackets(ref.title), ref.type_name, number):
+                    self.repo.mark_seen(src.id, key)
+                    continue
+                await asyncio.sleep(s.crawl_request_delay)
+                try:
+                    detail = await site.thread(fetcher, ref.tid)
+                except SiteError as exc:
+                    # 不入库, 下一轮再试.
+                    self.repo.log("warning", f"sehuatang 帖子 {ref.tid} 读取失败: {exc}")
+                    continue
+                title = detail.title or ref.title
+                number = extract_number(title)
+                tags = title_tags(title, number)
+                if "字幕" in forum_name:
+                    tags.add(Tag.SUBTITLE)
+                self._pool(src, Resource(
+                    source="sehuatang", tid=ref.tid, forum_id=fid, forum_name=forum_name, type_id=ref.type_id,
+                    type_name=ref.type_name, title=title, number=number, magnet=detail.magnet,
+                    info_hash=info_hash_of(detail.magnet) if detail.magnet else None, size=detail.size,
+                    posted=detail.posted or ref.posted, subtitle=Tag.SUBTITLE in tags, tags=tags, brackets=brackets(title),
+                    source_id=src.id,
+                ))
+                added += 1
+            if known or not refs:
+                break
+        return added
+
+    async def run_sukebei(self, *, source_id: int | None = None) -> None:
         async with self._locks["sukebei"]:
-            s = self.settings
-            if not s.sukebei_rules:
-                if force:
-                    raise SiteError("没有配置 sukebei 爬取规则, 请在设置 → 磁力 → sukebei 里填写")
-                return
-            fetcher = Fetcher(proxy=s.scrape_proxy, flaresolverr_url=s.flaresolverr_url)
-            new_total = queued = 0
+            await self._run_sources("sukebei", source_id, self._crawl_sukebei)
+
+    async def _crawl_sukebei(self, src: MagnetSource, fetcher: Fetcher) -> int:
+        assert src.id is not None
+        p = src.params
+        url = Sukebei.rss_url(
+            query=str(p.get("query") or ""), user=str(p.get("user") or ""), category=str(p.get("category") or "2_2"),
+            trusted_only=bool(p.get("trusted_only")),
+        )
+        status, text = await fetcher.get_text(url)
+        if status != 200:
+            raise SiteError(f"sukebei 返回 HTTP {status}")
+        added = 0
+        for item in parse_sukebei_items(text):
+            cand = item.candidate
+            if self.repo.resource_exists("sukebei", item.id) or self.repo.is_seen(src.id, str(item.id)):
+                continue
+            number = extract_number(cand.title)
+            tags = title_tags(cand.title, number)
+            min_seeders = int(p.get("min_seeders") or 0)  # type: ignore[call-overload]
+            if (
+                (p.get("trusted_only") and not item.trusted)
+                or (cand.seeders or 0) < min_seeders
+                or not src.filter.accepts(cand.title, tags, brackets(cand.title), number=number)
+            ):
+                self.repo.mark_seen(src.id, str(item.id))
+                continue
+            self._pool(src, Resource(
+                source="sukebei", tid=item.id, forum_id=0, forum_name="sukebei", type_name=src.name, title=cand.title,
+                number=number, magnet=cand.magnet, info_hash=cand.info_hash, size=cand.size, posted=cand.published,
+                seeders=cand.seeders, subtitle=Tag.SUBTITLE in tags, tags=tags, brackets=brackets(cand.title), source_id=src.id,
+            ))
+            added += 1
+        return added
+
+    async def run_feeds(self, *, source_id: int | None = None) -> None:
+        async with self._locks["feeds"]:
+            await self._run_sources("rss", source_id, self._crawl_feed)
+
+    async def _crawl_feed(self, src: MagnetSource, fetcher: Fetcher) -> int:
+        """RSS 条目: 带磁力 (或种子) 的入池; 只有番号的作为待挑选的作品入池 (没有磁力, 加入队列后再搜)."""
+        assert src.id is not None
+        url = str(src.params.get("url") or "")
+        added = 0
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as http:
             try:
-                for i, rule in enumerate(s.sukebei_rules):
-                    if i:
-                        await asyncio.sleep(s.crawl_request_delay)
-                    url = Sukebei.rss_url(query=rule.query, user=rule.user, category=rule.category, trusted_only=rule.trusted_only)
+                resp = await http.get(url)
+                entries = parse_feed(resp.text)
+            except (httpx.HTTPError, ValueError) as exc:
+                raise SiteError(f"读取 RSS 失败: {exc}") from exc
+            for entry in entries:
+                if self.repo.is_seen(src.id, entry.key):
+                    continue
+                self.repo.mark_seen(src.id, entry.key)
+                tags = title_tags(entry.title, entry.number)
+                if not src.filter.accepts(entry.title, tags, brackets(entry.title), number=entry.number):
+                    continue
+                if entry.number is None:
+                    self.repo.log("warning", f"RSS 条目无法识别番号, 已跳过: {entry.title[:80]}")
+                    continue
+                magnet = entry.magnet
+                if magnet is None and entry.torrent_url:
                     try:
-                        status, text = await fetcher.get_text(url)
-                        if status != 200:
-                            raise SiteError(f"HTTP {status}")
-                        items = parse_sukebei_items(text)
-                    except SiteError as exc:
-                        self.repo.log("warning", f"sukebei 规则 {rule.name} 读取失败: {exc}")
-                        continue
-                    for item in items:
-                        cand = item.candidate
-                        if not _rule_accepts(rule, item.trusted, cand) or self.repo.resource_exists("sukebei", item.id):
-                            continue
-                        number = extract_number(cand.title)
-                        res = self.repo.add_resource(
-                            Resource(
-                                source="sukebei", tid=item.id, forum_id=0, forum_name="sukebei", type_name=rule.name,
-                                title=cand.title, number=number, magnet=cand.magnet, info_hash=cand.info_hash,
-                                size=cand.size, posted=cand.published, seeders=cand.seeders,
-                                subtitle=bool(number and (Tag.SUBTITLE in detect_tags(cand, number))),
-                            )
-                        )
-                        new_total += 1
-                        if rule.auto_download and number and res.id:
-                            evaluate(cand, number, s)
-                            if not cand.rejected:
-                                self.download_resource(res.id)
-                                queued += 1
-            finally:
-                await fetcher.aclose()
-                if new_total:
-                    self.repo.log("info", f"sukebei 爬取: 新磁力 {new_total} 个, 自动下载 {queued} 个")
+                        torrent = await http.get(entry.torrent_url)
+                        magnet = torrent_to_magnet(torrent.content, entry.title)
+                    except (httpx.HTTPError, ValueError) as exc:
+                        self.repo.log("warning", f"种子下载或解析失败 {entry.title[:60]}: {exc}")
+                tid = int(hashlib.sha1(f"{url}\n{entry.key}".encode()).hexdigest()[:15], 16)
+                self._pool(src, Resource(
+                    source="rss", tid=tid, forum_id=0, forum_name="rss", type_name=src.name, title=entry.title,
+                    number=entry.number, magnet=magnet, info_hash=info_hash_of(magnet) if magnet else None,
+                    subtitle=Tag.SUBTITLE in tags, tags=tags, brackets=brackets(entry.title), source_id=src.id,
+                ))
+                added += 1
+        return added
 
     async def run_amane(self) -> None:
         """按番号把 Amane 里的作品信息 (海报、封面、演员) 缓存下来, 订阅的女优按名称缓存头像与资料."""
@@ -682,31 +779,58 @@ class ActressGroup:
 
 
 @dataclass
-class PooledMagnet:
-    resource: Resource
-    tags: set[str]
-    score: float
-    rejected: str
-
-
-@dataclass
-class PoolGroup:
-    """「确认影片」的一张卡片: 一个番号, 磁力池里它的磁力, 以及两边共享的作品信息."""
+class WorkItem:
+    """「挑选作品」的一行: 一个番号, 合并了片源订阅的作品与磁力池里它的磁力."""
 
     number: str
-    magnets: list[PooledMagnet]
+    release: Release | None = None
+    """片源订阅里的作品."""
+    subs_name: str = ""
+    magnets: list[Resource] = field(default_factory=list)
+    """磁力池里这个番号的磁力."""
+    sources: list[str] = field(default_factory=list)
+    """入池的磁力订阅名."""
     work: Work | None = None
     """Amane 里的作品 (海报、封面、演员)."""
-    release: Release | None = None
-    """订阅里见过的同番号作品."""
+    wanted: Wanted | None = None
+    owned: bool = False
+    dismissed: bool = False
 
     @property
     def title(self) -> str:
-        return (self.work.title if self.work else "") or (self.release.title if self.release else "")
+        if self.work and self.work.title:
+            return self.work.title
+        if self.release and self.release.title:
+            return self.release.title
+        return self.magnets[0].title if self.magnets else ""
 
     @property
-    def best(self) -> PooledMagnet:
-        return self.magnets[0]
+    def date(self) -> str | None:
+        if self.release and self.release.date:
+            return self.release.date
+        if self.work and self.work.date:
+            return self.work.date
+        posted = next((m.posted for m in self.magnets if m.posted), None)
+        return _iso_date(posted) if posted else None
+
+    @property
+    def tags(self) -> set[str]:
+        return set().union(*(m.tags for m in self.magnets)) if self.magnets else set()
+
+
+def _iso_date(text: str) -> str | None:
+    """论坛的 ``2026-10-7 06:00`` 与 RSS 的 ``Tue, 07 Oct 2026 ...`` 都转成 ``2026-10-07``."""
+    m = re.search(r"(\d{4})-(\d{1,2})-(\d{1,2})", text)
+    if m:
+        return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+    try:
+        return email.utils.parsedate_to_datetime(text).date().isoformat()
+    except (TypeError, ValueError):
+        return None
+
+
+def _recent(r: Resource, days: int) -> bool:
+    return r.crawled_at >= time.time() - days * 86400
 
 
 def _name_key(name: str) -> str:
@@ -719,28 +843,6 @@ def _resource_candidate(r: Resource) -> Candidate:
         site=r.source, title=r.title, magnet=r.magnet, info_hash=r.info_hash, size=r.size, published=r.posted,
         seeders=r.seeders, tags={Tag.SUBTITLE} if r.subtitle else set(),
     )
-
-
-def _rule_accepts(rule: SukebeiRule, trusted: bool, cand: Candidate) -> bool:
-    """sukebei 规则的入池条件: 只要可信、最少做种、包含词、排除词."""
-    if rule.trusted_only and not trusted:
-        return False
-    if rule.min_seeders and (cand.seeders or 0) < rule.min_seeders:
-        return False
-    lowered = cand.title.lower()
-    if rule.include_keywords and not any(k.lower() in lowered for k in rule.include_keywords):
-        return False
-    return not any(k.lower() in lowered for k in rule.exclude_keywords)
-
-
-def _accepts(forum: CrawlForum, r: Resource) -> bool:
-    """板块的自动下载过滤: 分类、包含词、排除词."""
-    if forum.types and r.type_name not in forum.types:
-        return False
-    lowered = r.title.lower()
-    if forum.include_keywords and not any(k.lower() in lowered for k in forum.include_keywords):
-        return False
-    return not any(k.lower() in lowered for k in forum.exclude_keywords)
 
 
 def _already_exists(message: str) -> bool:

@@ -1,10 +1,11 @@
 {% extends "base.html" %}
-{% block title %}订阅 - kumo{% endblock %}
+{% from "_flow.html" import flow %}
+{% block title %}片源订阅 - kumo{% endblock %}
 {% block content %}
 <div class="page-head">
   <div>
-    <h1>订阅</h1>
-    <div class="flow" style="margin-top:6px"><span class="on">订阅资料站</span>→<span>挑选作品</span>→<span>搜磁力</span>→<span>选磁力</span>→<span>115 云下载</span></div>
+    <h1>片源订阅</h1>
+    {{ flow('subscribe', 'subs') }}
   </div>
   <div class="actions"><form class="inline" method="post" action="/run/subs"><button>全部立即检查</button></form></div>
 </div>
@@ -35,7 +36,7 @@
     <tr><th>名称</th><th>站点</th><th>类型</th><th class="r">作品</th><th>上次检查</th><th>自动搜磁力</th><th>RSS</th><th></th></tr>
     {% for sub in subs %}
     <tr{% if not sub.enabled %} class="disabled"{% endif %}>
-      <td style="min-width:150px"><a href="{{ ('/actresses/' ~ sub.id) if sub.kind == 'star' else ('/releases?sub=' ~ sub.id) }}"><b>{{ sub.name }}</b></a>
+      <td style="min-width:150px"><a href="{{ ('/actresses/' ~ sub.id) if sub.kind == 'star' else ('/works?origin=subs&sub=' ~ sub.id) }}"><b>{{ sub.name }}</b></a>
         {% if not sub.enabled %} <span class="tag">已停用</span>{% endif %}
         <details style="display:inline"><summary class="faint small" style="display:inline;cursor:pointer;margin-left:4px">改名</summary>
           <form method="post" action="/subscriptions/{{ sub.id }}/rename" class="bar" style="margin-top:6px">

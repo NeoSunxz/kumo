@@ -111,7 +111,7 @@ def test_actress_pages(service: Service, tmp_path: Path) -> None:
         )
         assert r.headers["location"].startswith(f"/actresses/{jb.id}?todo=1&message=")
         r = c.post("/releases/queue", data={"ids": []}, headers={"referer": "http://evil.example/x"}, follow_redirects=False)
-        assert r.headers["location"].startswith("/releases?")
+        assert r.headers["location"].startswith("/works?")
 
 
 @pytest.mark.parametrize(
