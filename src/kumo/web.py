@@ -432,6 +432,21 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
             raise HTTPException(400, "未知操作")
         return back(f"/sources#src-{source_id}")
 
+    @app.post("/resources/delete")
+    async def delete_resources(request: Request) -> RedirectResponse:
+        """删除某来源 (``source``: sehuatang / sukebei / rss) 或某条订阅 (``src``) 爬到的全部磁力."""
+        form = await request.form()
+        source, src = str(form.get("source") or ""), _opt_int(str(form.get("src") or ""))
+        repo = svc(request).repo
+        if src is not None:
+            n, label = repo.delete_resources(source_id=src), (s.name if (s := repo.source(src)) else f"订阅 {src}")
+        elif source in SOURCE_KINDS:
+            n, label = repo.delete_resources(source=source), SOURCE_KINDS[source]
+        else:
+            raise HTTPException(400, "要指定来源或订阅")
+        repo.log("info", f"删除磁力: {label} {n} 条")
+        return back(_with_flash("/resources", f"已删除「{label}」的磁力 {n} 条; 下次爬取会重新抓取"))
+
     @app.post("/resources/{resource_id}/download")
     async def download_resource(request: Request, resource_id: int) -> RedirectResponse:
         try:

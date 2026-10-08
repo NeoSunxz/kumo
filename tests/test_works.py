@@ -426,3 +426,22 @@ def test_empty_filter_values_mean_all(service: Service, tmp_path: Path) -> None:
             r = c.get(url)
             assert r.status_code == 200, url
         assert "ABC-110" in c.get("/works?days=").text
+
+
+def test_delete_resources_by_source_and_subscription(service: Service, tmp_path: Path) -> None:
+    a, b = source(service), source(service)
+    add_res(service, 1, "ABC-201", "ABC-201", src=a)
+    add_res(service, 2, "ABC-202", "ABC-202", src=b)
+    service.repo.add_resource(Resource(source="sehuatang", tid=3, forum_id=103, forum_name="", type_name="", title="ABC-203", number="ABC-203"))
+    service.repo.mark_seen(a.id or 0, "99")
+    service.add_numbers(["ABC-201"])
+    with TestClient(create_app(Env(data_dir=tmp_path, password=""), service=service)) as c:
+        assert "全部磁力" in c.get(f"/resources?src={a.id}").text and "的全部磁力</button>" in c.get(f"/resources?src={a.id}").text
+        r = c.post("/resources/delete", data={"src": str(a.id)}, follow_redirects=False)
+        assert r.status_code == 303 and "1" in r.headers["location"]
+        assert {x.tid for x in service.repo.resources()} == {2, 3}
+        assert not service.repo.is_seen(a.id or 0, "99")  # 清掉见过的记录, 下次重新爬
+        assert service.repo.wanted_by_number("ABC-201")  # 队列不受影响
+        c.post("/resources/delete", data={"source": "sehuatang"})
+        assert {x.tid for x in service.repo.resources()} == {2}
+        assert c.post("/resources/delete", data={}).status_code == 400

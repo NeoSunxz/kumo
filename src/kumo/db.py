@@ -728,6 +728,22 @@ class Repo:
             (forum_id,),
         )
 
+    def delete_resources(self, *, source: str | None = None, source_id: int | None = None) -> int:
+        """删除爬到的磁力 (按来源类型或某条订阅), 同时清掉对应订阅的「见过」记录, 下次爬取会重新抓这些帖子.
+
+        已加入下载队列的番号不受影响 (候选磁力另存在 candidate 表).
+        """
+        if source is None and source_id is None:
+            raise ValueError("要指定来源或订阅")
+        where, params = ("source_id = ?", [source_id]) if source_id is not None else ("source = ?", [source])
+        with self._tx() as c:
+            n = c.execute(f"DELETE FROM resource WHERE {where}", params).rowcount
+            if source_id is not None:
+                c.execute("DELETE FROM source_seen WHERE source_id = ?", (source_id,))
+            else:
+                c.execute("DELETE FROM source_seen WHERE source_id IN (SELECT id FROM magnet_source WHERE kind = ?)", (source,))
+        return n
+
     def link_resource(self, resource_id: int, wanted_id: int) -> None:
         with self._tx() as c:
             c.execute("UPDATE resource SET wanted_id = ? WHERE id = ?", (wanted_id, resource_id))
