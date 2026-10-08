@@ -1,44 +1,48 @@
 {% extends "base.html" %}
 {% block title %}{{ w.number }} - kumo{% endblock %}
 {% block content %}
-<div class="card">
-  <h2>{{ w.number }} <span class="badge s-{{ w.status.value }}">{{ STATUS_LABELS[w.status] }}</span></h2>
-  {% if w.note %}<p>{{ w.note }}</p>{% endif %}
-  <p class="muted">来源 {{ w.source }} · 添加 {{ w.created_at|ts }} · 搜索 {{ w.searched_at|ts }}
-    {% if w.submitted_at %} · 提交 {{ w.submitted_at|ts }}{% endif %}
-    {% if w.status.value == 'downloading' %} · 进度 {{ w.percent|round|int }}%{% endif %}</p>
-  {% if owned %}
-  <p class="ok">115 目录中已有:
-    {% for f in owned %}<br><span class="break">{{ f.root }} · {{ f.name }} ({{ f.size|size }})</span>{% endfor %}</p>
-  {% endif %}
-  <form class="inline" method="post" action="/wanted/{{ w.id }}/retry"><button>重新搜索</button></form>
-  {% if w.status.value == 'failed' and w.chosen_id %}<form class="inline" method="post" action="/wanted/{{ w.id }}/resubmit"><button>重新提交</button></form>{% endif %}
-  <form class="inline" method="post" action="/wanted/{{ w.id }}/ignore"><button>忽略</button></form>
-  <form class="inline" method="post" action="/wanted/{{ w.id }}/delete"><button class="danger">删除</button></form>
+<div class="page-head">
+  <div>
+    <p class="lead" style="margin:0 0 4px"><a href="/">← 下载队列</a></p>
+    <h1><span class="num">{{ w.number }}</span> <span class="badge s-{{ w.status.value }}">{{ STATUS_LABELS[w.status] }}{% if w.status.value == 'downloading' %} {{ w.percent|round|int }}%{% endif %}</span></h1>
+    <p class="lead">来源 {{ w.source }} · 添加 {{ w.created_at|ts }} · 搜索 {{ w.searched_at|ts }}{% if w.submitted_at %} · 提交 {{ w.submitted_at|ts }}{% endif %}</p>
+  </div>
+  <div class="actions">
+    <form class="inline" method="post" action="/wanted/{{ w.id }}/retry"><button>重新搜索</button></form>
+    {% if w.status.value == 'failed' and w.chosen_id %}<form class="inline" method="post" action="/wanted/{{ w.id }}/resubmit"><button>重新提交</button></form>{% endif %}
+    <form class="inline" method="post" action="/wanted/{{ w.id }}/ignore"><button>忽略</button></form>
+    <form class="inline" method="post" action="/wanted/{{ w.id }}/delete" onsubmit="return confirm('删除 {{ w.number }}？')"><button class="danger">删除</button></form>
+  </div>
 </div>
 
-<div class="card">
-  <h2>候选磁力</h2>
-  <div class="scroll">
+{% if w.note %}<div class="alert {{ 'error' if w.status.value in ('failed', 'no_magnet') else 'info' }}"><span>{{ w.note }}</span></div>{% endif %}
+{% if owned %}
+<div class="alert success"><span>115 目录中已有：
+  {% for f in owned %}<br><span class="break small">{{ f.root }} · {{ f.name }} <span class="muted">({{ f.size|size }})</span></span>{% endfor %}</span></div>
+{% endif %}
+
+<div class="card flush">
+  <div class="card-head"><h2>候选磁力</h2><span class="muted small">{{ candidates|length }} 个</span></div>
+  <div class="scroll" style="margin-top:12px">
   <table>
-    <tr><th></th><th>标题</th><th>大小</th><th>做种</th><th>标签</th><th>来源</th><th>分</th><th></th></tr>
+    <tr><th></th><th>标题</th><th class="r">大小</th><th class="r">做种</th><th>标签</th><th>来源</th><th class="r">分</th><th></th></tr>
     {% for c in candidates %}
-    <tr>
-      <td>{% if c.id == w.chosen_id %}<b class="ok">✓</b>{% endif %}</td>
-      <td class="break">{{ c.title }}{% if c.rejected %}<br><span class="muted">✗ {{ c.rejected }}</span>{% endif %}</td>
-      <td>{{ c.size|size }}</td>
-      <td>{{ c.seeders if c.seeders is not none else '-' }}</td>
+    <tr{% if c.rejected %} class="disabled"{% endif %}>
+      <td style="width:28px;text-align:center">{% if c.id == w.chosen_id %}<b class="ok" title="已选">✓</b>{% endif %}</td>
+      <td class="break small">{{ c.title }}{% if c.rejected %}<br><span class="bad">✗ {{ c.rejected }}</span>{% endif %}</td>
+      <td class="r nowrap">{{ c.size|size }}</td>
+      <td class="r">{{ c.seeders if c.seeders is not none else '-' }}</td>
       <td>{% for t in c.tags|sort %}<span class="tag">{{ TAG_LABELS.get(t, t) }}</span>{% endfor %}</td>
-      <td class="muted">{{ c.site }}</td>
-      <td>{{ c.score }}</td>
-      <td>{% if c.id != w.chosen_id %}<form method="post" action="/wanted/{{ w.id }}/choose/{{ c.id }}"><button>选这个</button></form>{% endif %}</td>
+      <td class="muted small">{{ c.site }}</td>
+      <td class="r score">{{ c.score }}</td>
+      <td class="r">{% if c.id != w.chosen_id %}<form method="post" action="/wanted/{{ w.id }}/choose/{{ c.id }}"><button class="sm">选这个</button></form>{% endif %}</td>
     </tr>
     {% else %}
-    <tr><td colspan="8" class="muted">还没有候选</td></tr>
+    <tr><td colspan="8"><div class="empty">还没有候选</div></td></tr>
     {% endfor %}
   </table>
   </div>
-  <form method="post" action="/wanted/{{ w.id }}/magnet" style="margin-top:12px;display:flex;gap:8px">
+  <form method="post" action="/wanted/{{ w.id }}/magnet" class="bar" style="padding:14px 18px;border-top:1px solid var(--line)">
     <input type="text" name="magnet" placeholder="或者直接粘贴磁力链接 magnet:?xt=urn:btih:...">
     <button>使用</button>
   </form>

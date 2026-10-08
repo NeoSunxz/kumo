@@ -1,47 +1,57 @@
 {% extends "base.html" %}
 {% block title %}爬取 - kumo{% endblock %}
 {% block content %}
-{% if not crawl_enabled %}<div class="alert">论坛爬取未启用，到 <a href="/settings">设置</a> 里打开「启用定时爬取」。</div>{% endif %}
+<div class="page-head">
+  <div>
+    <h1>论坛资源</h1>
+    <p class="lead">sehuatang 已爬取的帖子，可按板块 / 分类输出 RSS</p>
+  </div>
+  <div class="actions"><form class="inline" method="post" action="/run/crawl"><button>立即爬取</button></form></div>
+</div>
+{% if not crawl_enabled %}<div class="alert"><span>论坛爬取未启用，到 <a href="/settings">设置</a> 里打开「启用定时爬取」。</span></div>{% endif %}
+
 <div class="card">
   <div class="filters">
     <a href="/resources" class="{% if not forum %}on{% endif %}">全部板块</a>
-    {% for f in forums %}<a href="/resources?forum={{ f.forum_id }}" class="{% if forum == f.forum_id %}on{% endif %}">{{ f.forum_name or f.forum_id }}（{{ f.forum_id }}）{{ f.n }}</a>{% endfor %}
+    {% for f in forums %}<a href="/resources?forum={{ f.forum_id }}" class="{% if forum == f.forum_id %}on{% endif %}">{{ f.forum_name or f.forum_id }}（{{ f.forum_id }}）<b>{{ f.n }}</b></a>{% endfor %}
   </div>
   {% if types %}
   <div class="filters">
     <a href="/resources?forum={{ forum }}" class="{% if not typeid %}on{% endif %}">全部分类</a>
-    {% for t in types %}<a href="/resources?forum={{ forum }}&typeid={{ t.type_id }}" class="{% if typeid == t.type_id %}on{% endif %}">{{ t.type_name }}（{{ t.type_id }}）{{ t.n }}</a>{% endfor %}
+    {% for t in types %}<a href="/resources?forum={{ forum }}&typeid={{ t.type_id }}" class="{% if typeid == t.type_id %}on{% endif %}">{{ t.type_name }}（{{ t.type_id }}）<b>{{ t.n }}</b></a>{% endfor %}
   </div>
   {% endif %}
-  <form method="get" action="/resources" style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:center">
+  <form method="get" action="/resources" class="bar">
     {% if forum %}<input type="hidden" name="forum" value="{{ forum }}">{% endif %}
     {% if typeid %}<input type="hidden" name="typeid" value="{{ typeid }}">{% endif %}
-    <input type="text" name="q" value="{{ q }}" placeholder="搜索标题或番号" style="flex:1;min-width:180px">
-    <label class="check" style="margin:0"><input type="checkbox" name="subtitle" value="1" {% if subtitle == '1' %}checked{% endif %}> 只看字幕</label>
+    <input type="search" name="q" value="{{ q }}" placeholder="搜索标题或番号">
+    <label class="check"><input type="checkbox" name="subtitle" value="1" {% if subtitle == '1' %}checked{% endif %}> 只看字幕</label>
     <button>筛选</button>
   </form>
-  <p class="muted" style="margin:0 0 10px">当前筛选的 RSS（复制到 Amane「远程发现」订阅）：<br>
-    <code class="break" style="user-select:all">{{ rss_url }}</code></p>
+  <div class="rss-row"><span>当前筛选的 RSS（复制到 Amane「远程发现」订阅）</span>
+    <div class="copy"><code class="break">{{ rss_url }}</code><button type="button" data-copy>复制</button></div></div>
+</div>
+
+<div class="card flush">
   <div class="scroll"><table>
-    <tr><th>番号</th><th>标题</th><th>分类</th><th>大小</th><th>发表</th><th></th></tr>
+    <tr><th>番号</th><th>标题</th><th>分类</th><th class="r">大小</th><th>发表</th><th></th></tr>
     {% for r in items %}
     <tr>
-      <td>{{ r.number or '-' }}{% if r.subtitle %} <span class="tag">字幕</span>{% endif %}</td>
-      <td class="break">{{ r.title }}</td>
-      <td class="muted">{{ r.type_name }}</td>
-      <td>{{ r.size|size }}</td>
-      <td class="muted" style="white-space:nowrap">{{ (r.posted or '')[:10] }}</td>
-      <td style="white-space:nowrap">
+      <td class="nowrap"><span class="num">{{ r.number or '-' }}</span>{% if r.subtitle %} <span class="tag hl">字幕</span>{% endif %}</td>
+      <td class="break small">{{ r.title }}</td>
+      <td class="muted small nowrap">{{ r.type_name }}</td>
+      <td class="r nowrap">{{ r.size|size }}</td>
+      <td class="muted small nowrap">{{ (r.posted or '')[:10] }}</td>
+      <td class="r nowrap">
         {% if r.wanted_id %}<a href="/wanted/{{ r.wanted_id }}">已加入</a>
-        {% elif r.magnet and r.number %}<form method="post" action="/resources/{{ r.id }}/download"><button>下载</button></form>
-        {% elif not r.magnet %}<span class="muted">无磁力</span>
-        {% else %}<span class="muted">无番号</span>{% endif %}
+        {% elif r.magnet and r.number %}<form method="post" action="/resources/{{ r.id }}/download"><button class="sm">下载</button></form>
+        {% elif not r.magnet %}<span class="faint small">无磁力</span>
+        {% else %}<span class="faint small">无番号</span>{% endif %}
       </td>
     </tr>
     {% else %}
-    <tr><td colspan="6" class="muted">没有符合条件的资源</td></tr>
+    <tr><td colspan="6"><div class="empty">没有符合条件的资源</div></td></tr>
     {% endfor %}
   </table></div>
-  <form class="inline" method="post" action="/run/crawl"><button style="margin-top:10px">立即爬取</button></form>
 </div>
 {% endblock %}

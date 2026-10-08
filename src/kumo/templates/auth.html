@@ -1,18 +1,38 @@
 {% extends "base.html" %}
 {% block title %}115 授权 - kumo{% endblock %}
 {% block content %}
-<div class="card">
-  <h2>115 开放平台授权</h2>
+<div class="page-head">
+  <div>
+    <h1>115 授权</h1>
+    <p class="lead">只用 115 开放平台的官方接口，扫码授权，不用 Cookie</p>
+  </div>
+</div>
+<div class="card" style="max-width:560px">
   {% if not app_id %}
-    <p>请先到 <a href="/settings">设置</a> 填写开放平台 AppID。</p>
+    <ol class="steps">
+      <li><span>到 <a href="/settings">设置</a> 填写开放平台 AppID（没有可以先填 <code>fake</code> 模拟联调）</span></li>
+      <li><span>回到这里生成二维码</span></li>
+      <li><span>用 115 App 扫码并确认</span></li>
+    </ol>
   {% elif authorized %}
-    <p class="ok">已授权。授权有效期 1 年，期间自动续期。</p>
-    {% if quota %}<p>云下载配额：剩余 {{ quota.surplus }} / 共 {{ quota.count }}（已用 {{ quota.used }}）</p>{% endif %}
-    <form method="post" action="/auth/logout"><button class="danger">解除授权</button></form>
+    <p class="ok" style="font-size:15px;margin-top:0"><span class="dot ok"></span>已授权</p>
+    <p class="muted">授权有效期 1 年，期间自动续期。</p>
+    {% if quota %}
+    <div class="metrics" style="margin:14px 0 18px">
+      <div><b>{{ quota.surplus }}</b><span>云下载配额剩余</span></div>
+      <div><b>{{ quota.used }}</b><span>已用</span></div>
+      <div><b>{{ quota.count }}</b><span>共</span></div>
+    </div>
+    {% endif %}
+    <form method="post" action="/auth/logout" onsubmit="return confirm('解除 115 授权？')"><button class="danger">解除授权</button></form>
   {% elif qr %}
-    <p>用 115 App 扫码并确认授权：</p>
-    <div style="background:#fff;display:inline-block;padding:8px;border-radius:6px">{{ qr|safe }}</div>
-    <p id="state" class="muted">等待扫码…</p>
+    <div style="display:flex;gap:24px;flex-wrap:wrap;align-items:center">
+      <div class="qr">{{ qr|safe }}</div>
+      <div>
+        <p style="margin-top:0">用 115 App 扫码并确认授权</p>
+        <p id="state" class="muted"><span class="dot live"></span>等待扫码…</p>
+      </div>
+    </div>
     <script>
       const label = {0: "等待扫码…", 1: "已扫码，请在手机上确认", 2: "授权成功"};
       async function poll() {
@@ -20,15 +40,16 @@
           const r = await fetch("/auth/poll");
           const d = await r.json();
           const el = document.getElementById("state");
-          if (d.status === -1) { el.textContent = "授权失败：" + (d.message || "") + "，请刷新页面重试"; return; }
+          if (d.status === -1) { el.className = "bad"; el.textContent = "授权失败：" + (d.message || "") + "，请刷新页面重试"; return; }
           el.textContent = label[d.status] || "";
-          if (d.status === 2) { setTimeout(() => location.reload(), 800); return; }
+          if (d.status === 2) { el.className = "ok"; setTimeout(() => location.reload(), 800); return; }
         } catch (e) { await new Promise(r => setTimeout(r, 3000)); }
         poll();
       }
       poll();
     </script>
   {% else %}
+    <p class="muted" style="margin-top:0">生成二维码后用 115 App 扫码确认。</p>
     <form method="post" action="/auth/start"><button class="primary">生成授权二维码</button></form>
   {% endif %}
 </div>

@@ -1,30 +1,46 @@
 {% extends "base.html" %}
 {% block title %}115 目录 - kumo{% endblock %}
 {% block content %}
-<div class="card">
-  <h2>同步结果</h2>
-  <table>
-    <tr><th>目录</th><th>文件数</th><th>识别出番号</th><th>总大小</th></tr>
-    {% for r in stats %}
-    <tr><td>{{ r.root }}</td><td>{{ r.files }}</td><td>{{ r.numbered }}</td><td>{{ r.bytes|size }}</td></tr>
-    {% else %}
-    <tr><td colspan="4" class="muted">还没有同步。在设置里配置同步目录并完成 115 授权后会自动同步。</td></tr>
-    {% endfor %}
-  </table>
-  <form class="inline" method="post" action="/run/sync"><button style="margin-top:10px">立即同步</button></form>
+<div class="page-head">
+  <div>
+    <h1>目录同步</h1>
+    <p class="lead">定期列出 115 同步目录，已有的番号不再下载</p>
+  </div>
+  <div class="actions"><form class="inline" method="post" action="/run/sync"><button>立即同步</button></form></div>
 </div>
-<div class="card">
-  <form method="get" action="/library" style="display:flex;gap:8px;margin-bottom:10px">
-    <input type="text" name="q" value="{{ q }}" placeholder="搜索文件名或番号">
+
+{% if stats %}
+<div class="stats">
+  <div class="stat"><div class="v">{{ stats|sum(attribute='files') }}</div><div class="k">文件</div></div>
+  <div class="stat"><div class="v">{{ stats|sum(attribute='numbered') }}</div><div class="k">识别出番号</div></div>
+  <div class="stat"><div class="v">{{ (stats|sum(attribute='bytes'))|size }}</div><div class="k">总大小</div></div>
+</div>
+{% endif %}
+
+<div class="card flush">
+  <div class="card-head"><h2>同步目录</h2></div>
+  <div class="scroll" style="margin-top:12px"><table>
+    <tr><th>目录</th><th class="r">文件数</th><th class="r">识别出番号</th><th class="r">总大小</th></tr>
+    {% for r in stats %}
+    <tr><td>{{ r.root }}</td><td class="r">{{ r.files }}</td><td class="r">{{ r.numbered }}</td><td class="r nowrap">{{ r.bytes|size }}</td></tr>
+    {% else %}
+    <tr><td colspan="4"><div class="empty">还没有同步。在 <a href="/settings">设置</a> 里配置同步目录并完成 <a href="/auth">115 授权</a> 后会自动同步。</div></td></tr>
+    {% endfor %}
+  </table></div>
+</div>
+
+<div class="card{% if q %} flush{% endif %}">
+  <form method="get" action="/library" class="bar"{% if q %} style="padding:14px 18px"{% endif %}>
+    <input type="search" name="q" value="{{ q }}" placeholder="搜索文件名或番号">
     <button>搜索</button>
   </form>
   {% if q %}
   <div class="scroll"><table>
-    <tr><th>文件</th><th>番号</th><th>字幕</th><th>大小</th><th>目录</th></tr>
+    <tr><th>文件</th><th>番号</th><th>字幕</th><th class="r">大小</th><th>目录</th></tr>
     {% for f in files %}
-    <tr><td class="break">{{ f.name }}</td><td>{{ f.number or '-' }}</td><td>{{ '是' if f.subtitle else '' }}</td><td>{{ f.size|size }}</td><td class="muted">{{ f.root }}</td></tr>
+    <tr><td class="break small">{{ f.name }}</td><td class="num">{{ f.number or '-' }}</td><td>{% if f.subtitle %}<span class="tag hl">字幕</span>{% endif %}</td><td class="r nowrap">{{ f.size|size }}</td><td class="muted small">{{ f.root }}</td></tr>
     {% else %}
-    <tr><td colspan="5" class="muted">没有匹配的文件</td></tr>
+    <tr><td colspan="5"><div class="empty">没有匹配的文件</div></td></tr>
     {% endfor %}
   </table></div>
   {% endif %}

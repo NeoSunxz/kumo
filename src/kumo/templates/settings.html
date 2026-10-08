@@ -1,9 +1,12 @@
 {% extends "base.html" %}
 {% block title %}设置 - kumo{% endblock %}
 {% block content %}
-{% if message %}<div class="alert">{{ message }}</div>{% endif %}
-<form method="post" action="/settings">
-<div class="section-title">115 与下载</div>
+<div class="page-head">
+  <div><h1>设置</h1><p class="lead">保存后立即生效，下一轮调度读取新值</p></div>
+</div>
+{% if message %}<div class="alert {{ 'success' if message == '已保存' else 'error' }}"><span>{{ message }}</span></div>{% endif %}
+<form method="post" action="/settings" style="max-width:920px">
+<div class="section-title" style="margin-top:0">115 与下载</div>
 <div class="card">
   <h2>115 开放平台</h2>
   <div class="grid">
@@ -18,7 +21,8 @@
 
 <div class="card">
   <h2>磁力刮削</h2>
-  <p>{% for name in sites %}<label class="check"><input type="checkbox" name="site_{{ name }}" {% if name in s.sites %}checked{% endif %}> {{ name }}</label>{% endfor %}</p>
+  <div class="muted small" style="margin-bottom:6px">磁力来源（sehuatang 查本地已爬取的资源库）</div>
+  <div class="checks">{% for name in sites %}<label class="check"><input type="checkbox" name="site_{{ name }}" {% if name in s.sites %}checked{% endif %}> {{ name }}</label>{% endfor %}</div>
   <div class="grid">
     <label><span>刮削代理（可空）</span><input type="text" name="scrape_proxy" value="{{ s.scrape_proxy }}" placeholder="http://user:pass@host:port"></label>
     <label><span>FlareSolverr 地址（可空）</span><input type="text" name="flaresolverr_url" value="{{ s.flaresolverr_url }}" placeholder="http://192.168.100.110:8191"></label>
@@ -33,10 +37,12 @@
     <label><span>最大体积（GB，0 不限）</span><input type="number" step="any" name="size_max_gb" value="{{ s.size_max_gb }}"></label>
     <label><span>排除关键词（逗号分隔）</span><input type="text" name="exclude_keywords" value="{{ s.exclude_keywords|join(',') }}"></label>
   </div>
+  <div class="checks" style="flex-direction:column">
   <label class="check"><input type="checkbox" name="prefer_subtitle" {% if s.prefer_subtitle %}checked{% endif %}> 优先中文字幕</label>
   <label class="check"><input type="checkbox" name="require_subtitle" {% if s.require_subtitle %}checked{% endif %}> 必须有中文字幕（没有就等人工选择）</label>
   <label class="check"><input type="checkbox" name="allow_4k" {% if s.allow_4k %}checked{% endif %}> 允许 4K</label>
   <label class="check"><input type="checkbox" name="avoid_h265" {% if s.avoid_h265 %}checked{% endif %}> 尽量避开 H265（网页播放不用转码）</label>
+  </div>
 </div>
 
 <div class="card">
@@ -56,15 +62,15 @@
     <label><span>新订阅首次回填几页（每页 30 部）</span><input type="number" name="subs_initial_pages" value="{{ s.subs_initial_pages }}" min="1" max="30"></label>
   </div>
   <label><span>JavDB Cookie（标签订阅需要登录；登录 JavDB 后在浏览器开发者工具里复制 Cookie，至少包含 _jdb_session）
-    {% if s.javdb_cookie %}<b class="ok">已填写</b>，留空保持不变{% endif %}</span>
+    {% if s.javdb_cookie %}<b class="ok">· 已填写</b>，留空保持不变{% endif %}</span>
     <input type="password" name="javdb_cookie" value="" placeholder="{{ '••••••（已保存）' if s.javdb_cookie else '_jdb_session=...' }}" autocomplete="off"></label>
   {% if s.javdb_cookie %}<label class="check"><input type="checkbox" name="clear_javdb_cookie"> 清除已保存的 JavDB Cookie</label>{% endif %}
-  <p class="muted" style="margin:0">订阅在「爬取 → 订阅」页面添加。请求间隔与下面的论坛爬取共用。</p>
+  <p class="hint" style="margin:0">订阅在「爬取 → 订阅」页面添加。请求间隔与下面的论坛爬取共用。</p>
 </div>
 
 <div class="card">
   <h2>论坛爬取（sehuatang）</h2>
-  <label class="check"><input type="checkbox" name="crawl_enabled" {% if s.crawl_enabled %}checked{% endif %}> 启用定时爬取</label>
+  <div class="checks"><label class="check"><input type="checkbox" name="crawl_enabled" {% if s.crawl_enabled %}checked{% endif %}> 启用定时爬取</label></div>
   <div class="grid">
     <label><span>站点地址（换域名时改这里）</span><input type="text" name="crawl_base_url" value="{{ s.crawl_base_url }}"></label>
     <label><span>每轮每个板块最多翻几页</span><input type="number" name="crawl_pages" value="{{ s.crawl_pages }}" min="1" max="20"></label>
@@ -78,6 +84,9 @@
 {% endfor %}</textarea></label>
 </div>
 
-<button class="primary">保存</button>
+<div class="selbar" style="position:sticky;top:auto;bottom:16px;margin-top:6px">
+  <span class="muted small">修改后记得保存</span><span class="spacer"></span>
+  <button class="primary">保存</button>
+</div>
 </form>
 {% endblock %}
