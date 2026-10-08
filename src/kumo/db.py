@@ -54,6 +54,8 @@ CREATE TABLE IF NOT EXISTS candidate (
     tags       TEXT NOT NULL DEFAULT '[]',
     score      REAL NOT NULL DEFAULT 0,
     rejected   TEXT NOT NULL DEFAULT '',
+    rank       INTEGER,
+    origin     TEXT,
     UNIQUE (wanted_id, info_hash)
 );
 CREATE TABLE IF NOT EXISTS library (
@@ -144,7 +146,8 @@ CREATE TABLE IF NOT EXISTS magnet_source (
     auto_download  INTEGER NOT NULL DEFAULT 0,
     last_run       REAL,
     last_error     TEXT NOT NULL DEFAULT '',
-    created_at     REAL NOT NULL
+    created_at     REAL NOT NULL,
+    priority       INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS source_seen (
     source_id  INTEGER NOT NULL,
@@ -230,6 +233,14 @@ class Repo:
             self._conn.execute("ALTER TABLE resource ADD COLUMN source_id INTEGER")
         if cols and "images" not in cols:
             self._conn.execute("ALTER TABLE resource ADD COLUMN images TEXT")
+        cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(candidate)")}
+        if cols and "rank" not in cols:
+            self._conn.execute("ALTER TABLE candidate ADD COLUMN rank INTEGER")
+            self._conn.execute("ALTER TABLE candidate ADD COLUMN origin TEXT")
+        cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(magnet_source)")}
+        if cols and "priority" not in cols:
+            self._conn.execute("ALTER TABLE magnet_source ADD COLUMN priority INTEGER NOT NULL DEFAULT 0")
+            self._conn.execute("UPDATE magnet_source SET priority = id")
         cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(subscription)")}
         if cols and "avatar" not in cols:
             self._conn.execute("ALTER TABLE subscription ADD COLUMN avatar TEXT")
@@ -355,10 +366,10 @@ class Repo:
             for cand in candidates:
                 cur = c.execute(
                     "INSERT OR IGNORE INTO candidate(wanted_id, site, title, magnet, info_hash, size, seeders, published,"
-                    " tags, score, rejected) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    " tags, score, rejected, rank, origin) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         wanted_id, cand.site, cand.title, cand.magnet, cand.info_hash, cand.size, cand.seeders,
-                        cand.published, json.dumps(sorted(cand.tags)), cand.score, cand.rejected,
+                        cand.published, json.dumps(sorted(cand.tags)), cand.score, cand.rejected, cand.rank, cand.origin,
                     ),
                 )
                 cand.id = cur.lastrowid
@@ -569,7 +580,8 @@ class Repo:
     def add_source(self, src: MagnetSource) -> MagnetSource:
         with self._tx() as c:
             cur = c.execute(
-                "INSERT INTO magnet_source(kind, name, params, filter, enabled, auto_download, created_at) VALUES(?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO magnet_source(kind, name, params, filter, enabled, auto_download, created_at, priority)"
+                " VALUES(?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(priority), 0) + 1 FROM magnet_source))",
                 (
                     src.kind, src.name, json.dumps(src.params, ensure_ascii=False), json.dumps(asdict(src.filter), ensure_ascii=False),
                     int(src.enabled), int(src.auto_download), time.time(),
@@ -592,7 +604,20 @@ class Repo:
             params.append(kind)
         if enabled_only:
             sql += " AND enabled = 1"
-        return [MagnetSource.from_row(r) for r in self._all(sql + " ORDER BY kind, id", params)]
+        return [MagnetSource.from_row(r) for r in self._all(sql + " ORDER BY priority, id", params)]
+
+    def move_source(self, source_id: int, step: int) -> None:
+        """在优先顺序里上移 (-1) 或下移 (1) 一位: 与相邻的那条交换."""
+        order = [s.id for s in self.sources()]
+        if source_id not in order:
+            return
+        i = order.index(source_id)
+        j = i + step
+        if not 0 <= j < len(order):
+            return
+        order[i], order[j] = order[j], order[i]
+        with self._tx() as c:
+            c.executemany("UPDATE magnet_source SET priority = ? WHERE id = ?", [(n, sid) for n, sid in enumerate(order, 1)])
 
     def update_source(self, source_id: int, **fields: Any) -> None:
         if not fields:

@@ -31,6 +31,7 @@ from .models import FILTER_TAGS, SOURCE_KINDS, STATUS_LABELS, TAG_LABELS, Magnet
 from .numbers import parse_input
 from .pan115 import DeviceAuth, Pan115Error
 from .sehuatang import Sehuatang
+from .select import day, ranked, tier
 from .subscriptions import KIND_LABELS, SOURCE_LABELS
 from .service import Service
 from .settings import Env, Settings
@@ -45,6 +46,7 @@ SEARCH_SOURCES = [*SITES, "sehuatang"]
 
 _TEMPLATES = Jinja2Templates(directory=Path(__file__).parent / "templates")
 _TEMPLATES.env.filters["size"] = format_size
+_TEMPLATES.env.filters["day"] = lambda text: day(text) or "-"
 _TEMPLATES.env.filters["ts"] = lambda t: datetime.fromtimestamp(t).strftime("%m-%d %H:%M") if t else "-"
 # 资料站图片经 kumo 代理 (JavBus 校验 Referer, 直接引用会 403).
 _TEMPLATES.env.filters["img"] = lambda url: f"/img?u={quote(url, safe='')}" if url else ""
@@ -154,7 +156,8 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
             raise HTTPException(404)
         key = wanted.number.upper()
         return page(
-            request, "wanted.html", w=wanted, candidates=repo.candidates(wanted_id), owned=repo.owned(wanted.number),
+            request, "wanted.html", w=wanted, candidates=ranked(repo.candidates(wanted_id), svc(request).settings),
+            tier=lambda c: tier(c, svc(request).settings), owned=repo.owned(wanted.number),
             work=repo.works([key]).get(key), release=repo.releases_by_numbers([key]).get(key),
         )
 
@@ -413,6 +416,8 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
             s.repo.update_source(source_id, enabled=not src.enabled)
         elif action == "auto":
             s.repo.update_source(source_id, auto_download=not src.auto_download)
+        elif action in ("up", "down"):
+            s.repo.move_source(source_id, -1 if action == "up" else 1)
         elif action == "run":
             job = {"sehuatang": "crawl", "sukebei": "sukebei", "rss": "feeds"}[src.kind]
             run = {"crawl": s.run_crawl, "sukebei": s.run_sukebei, "feeds": s.run_feeds}[job]
@@ -802,6 +807,7 @@ def _source_from_form(form: Any, src: MagnetSource) -> MagnetSource:
         default_name = urlsplit(url).hostname or url
     multi = form.getlist if hasattr(form, "getlist") else (lambda k: [])
     flt = SourceFilter(
+        tags_all=[t for t in multi("tags_all") if t in TAG_LABELS],
         tags_any=[t for t in multi("tags_any") if t in TAG_LABELS],
         tags_none=[t for t in multi("tags_none") if t in TAG_LABELS],
         brackets=_words(data.get("brackets", "")),

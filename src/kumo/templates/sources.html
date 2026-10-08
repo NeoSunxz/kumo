@@ -25,10 +25,15 @@
   {% if kind == 'sukebei' %}<div class="checks"><label class="check"><input type="checkbox" name="trusted_only" {% if p.trusted_only %}checked{% endif %}> 只要可信上传者</label></div>{% endif %}
 
   <div class="muted small" style="margin:6px 0 8px">入池条件（只看标题；都不选表示全部入池。98堂在打开帖子之前就按标题判断，不符合的不再请求）</div>
-  <div class="chips" style="margin-bottom:8px"><span class="k">必须有</span>
-    {% for t in FILTER_TAGS %}<label><input type="checkbox" name="tags_any" value="{{ t }}" {% if f and t in f.tags_any %}checked{% endif %}><span>{{ TAG_LABELS[t] }}</span></label>{% endfor %}
-    <span class="faint small">（任一）</span>
+  <div class="chips" style="margin-bottom:8px"><span class="k">都要有</span>
+    {% for t in FILTER_TAGS %}<label><input type="checkbox" name="tags_all" value="{{ t }}" {% if f and t in f.tags_all %}checked{% endif %}><span>{{ TAG_LABELS[t] }}</span></label>{% endfor %}
+    <span class="faint small">（如 中字 + 破解）</span>
   </div>
+  <div class="chips" style="margin-bottom:8px"><span class="k">有其一</span>
+    {% for t in FILTER_TAGS %}<label><input type="checkbox" name="tags_any" value="{{ t }}" {% if f and t in f.tags_any %}checked{% endif %}><span>{{ TAG_LABELS[t] }}</span></label>{% endfor %}
+    <span class="faint small">（如 破解 或 无码）</span>
+  </div>
+  {% if kind == 'sehuatang' %}<div class="faint small" style="margin:-2px 0 8px">高清中文字幕等字幕板块的帖子都算中字，「都要有：中字 + 破解」或只选「破解」效果一样。</div>{% endif %}
   <div class="chips" style="margin-bottom:10px"><span class="k">不要</span>
     {% for t in FILTER_TAGS %}<label><input class="neg" type="checkbox" name="tags_none" value="{{ t }}" {% if f and t in f.tags_none %}checked{% endif %}><span>{{ TAG_LABELS[t] }}</span></label>{% endfor %}
   </div>
@@ -63,7 +68,7 @@
 </datalist>
 
 <div class="bar" style="margin-bottom:12px">
-  <b>{{ sources|length }} 条订阅</b><span class="faint small">{{ sources|selectattr('enabled')|list|length }} 条启用</span>
+  <b>{{ sources|length }} 条订阅</b><span class="faint small">{{ sources|selectattr('enabled')|list|length }} 条启用 · 按优先顺序排列：磁力选择时同一档次（破解+中字 › 中字 › 破解）先选排在前面的订阅的磁力，同一订阅选日期新的</span>
   <span class="spacer"></span>
   {% for kind, label in [('sehuatang', '+ 98堂板块'), ('sukebei', '+ sukebei'), ('rss', '+ RSS')] %}
   <button type="button" class="sm" data-panel="add-{{ kind }}">{{ label }}</button>
@@ -94,8 +99,11 @@
   {% for src in sources %}
   <div class="src-card{{ ' off' if not src.enabled }}" id="src-{{ src.id }}">
     <div class="head">
+      <span class="prio" title="优先顺序">#{{ loop.index }}</span>
       <span class="kind">{{ {'sehuatang': '98堂', 'sukebei': 'sukebei', 'rss': 'RSS'}[src.kind] }}</span>
       <span class="name" title="{{ src.name }}">{{ src.name }}</span>
+      <form class="inline" method="post" action="/sources/{{ src.id }}/up"><button class="sm ghost mv" title="提前"{% if loop.first %} disabled{% endif %}>↑</button></form>
+      <form class="inline" method="post" action="/sources/{{ src.id }}/down"><button class="sm ghost mv" title="靠后"{% if loop.last %} disabled{% endif %}>↓</button></form>
       <form class="inline" method="post" action="/sources/{{ src.id }}/toggle"><button class="switch{{ ' on' if src.enabled }}" title="{{ '停用' if src.enabled else '启用' }}（停用后不定时爬取）"><b></b></button></form>
     </div>
     <div class="desc" title="{{ src.describe() }}">{{ src.describe() }}</div>

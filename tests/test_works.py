@@ -303,10 +303,11 @@ def test_old_settings_become_sources(repo: Repo) -> None:
     ))
     service = Service(repo)
     srcs = service.repo.sources()
-    assert [(s.kind, s.name) for s in srcs] == [("rss", "a/rss"), ("sehuatang", "板块 103"), ("sehuatang", "板块 36:369"), ("sukebei", "中字")]
-    assert srcs[2].auto_download and srcs[2].filter.exclude == ["VR"] and srcs[1].filter == SourceFilter()
-    assert srcs[3].params["min_seeders"] == 3 and srcs[3].filter.exclude == ["4K"]
-    assert srcs[0].auto_download and srcs[0].filter.include == ["中文"]
+    # 按优先顺序 (先建的在前)
+    assert [(s.kind, s.name) for s in srcs] == [("sehuatang", "板块 103"), ("sehuatang", "板块 36:369"), ("sukebei", "中字"), ("rss", "a/rss")]
+    assert srcs[1].auto_download and srcs[1].filter.exclude == ["VR"] and srcs[0].filter == SourceFilter()
+    assert srcs[2].params["min_seeders"] == 3 and srcs[2].filter.exclude == ["4K"]
+    assert srcs[3].auto_download and srcs[3].filter.include == ["中文"]
     Service(repo)  # 只迁移一次
     assert len(repo.sources()) == 4
 
@@ -345,3 +346,72 @@ async def test_sukebei_preview_explains_each_item(service: Service, sukebei: dic
     assert [r.reason for r in rows] == ["", "做种不足 3", "上传者不可信", "没有中字"]
     assert rows[0].seeders == 5 and rows[0].size == 5 * GiB
     assert service.repo.resources() == []
+
+
+# --- 磁力选择的排序: 档次 › 来源顺序 › 日期 › 分数 ---
+
+
+async def test_choose_order_tier_then_source_then_date(service: Service, tmp_path: Path) -> None:
+    service.repo.save_settings(Settings(app_id="test", download_path="/云下载", sites=["sehuatang"]))
+    t98 = service.repo.add_source(MagnetSource(kind="sehuatang", name="98堂", params={"fid": 103}))
+    suk = service.repo.add_source(MagnetSource(kind="sukebei", name="sukebei", params={}))
+
+    def res(tid: int, src: MagnetSource, title: str, posted: str) -> None:
+        service.repo.add_resource(Resource(
+            source=src.kind, tid=tid, forum_id=0, forum_name="", type_name="", title=title, number="ABC-100",
+            magnet=f"magnet:?xt=urn:btih:{tid:040x}", info_hash=f"{tid:040x}", size=5 * GiB, posted=posted, source_id=src.id,
+        ))
+
+    res(1, suk, "ABC-100 中文字幕", "Tue, 07 Oct 2026 08:00:00 -0000")
+    res(2, t98, "ABC-100 [中文字幕]", "2026-10-01 06:00:00")
+    res(3, suk, "ABC-100 [无码破解] 中文字幕", "Tue, 07 Oct 2026 08:00:00 -0000")
+    res(4, t98, "ABC-100 [新模型无码破解] 中文字幕 旧", "2026-09-01 06:00:00")
+    res(5, t98, "ABC-100 [新模型无码破解] 中文字幕 新", "2026-10-05 06:00:00")
+    res(6, t98, "ABC-100 无字幕", "2026-10-06 06:00:00")
+    service.add_numbers(["ABC-100"])
+    w = service.repo.wanted_by_number("ABC-100")
+    assert w
+    await service.search(w)
+    from kumo.select import ranked
+
+    order = [c.info_hash for c in ranked(service.repo.candidates(w.id), service.settings)]
+    # 98 破解中字 (新的在前) › sukebei 破解中字 › 98 中字 › sukebei 中字 › 其它
+    assert order == [f"{t:040x}" for t in (5, 4, 3, 2, 1, 6)]
+    w = service.repo.wanted(w.id)
+    assert w and (chosen := service.repo.candidate(w.chosen_id or 0)) and chosen.info_hash == f"{5:040x}"
+    assert chosen.origin == "98堂" and chosen.rank == 0
+
+    # 调换订阅顺序后, 同档次里 sukebei 优先
+    service.repo.move_source(suk.id or 0, -1)
+    await service.search(w)
+    order = [c.info_hash for c in ranked(service.repo.candidates(w.id), service.settings)]
+    assert order[:2] == [f"{3:040x}", f"{5:040x}"]
+
+    with TestClient(create_app(Env(data_dir=tmp_path, password=""), service=service)) as c:
+        page = c.get(f"/wanted/{w.id}").text
+        assert "破解+中字" in page and "2026-10-07" in page and "2026-10-05" in page
+
+
+def test_day_normalizes_dates() -> None:
+    from kumo.select import day
+
+    assert day("2026-10-7 06:00") == "2026-10-07"
+    assert day("Tue, 07 Oct 2026 08:00:00 -0000") == "2026-10-07"
+    assert day("") is None and day("not a date") is None
+
+
+def test_tags_all_filter_and_move(service: Service, tmp_path: Path) -> None:
+    flt = SourceFilter(tags_all=["subtitle", "leak"])
+    assert flt.reject_reason("ABF-386 [无码破解]x", {"leak"}, ["无码破解"]) == "没有中字"
+    assert flt.accepts("x", {"leak", "subtitle"}, [])
+    assert flt.summary() == ["要中字+破解"]
+    with TestClient(create_app(Env(data_dir=tmp_path, password=""), service=service)) as c:
+        c.post("/sources", data={"kind": "sehuatang", "fid": "103", "tags_all": ["subtitle", "leak"]})
+        c.post("/sources", data={"kind": "sukebei", "query": "x"})
+        a, b = service.repo.sources()
+        assert a.filter.tags_all == ["subtitle", "leak"]
+        c.post(f"/sources/{b.id}/up")
+        assert [s.id for s in service.repo.sources()] == [b.id, a.id]
+        c.post(f"/sources/{b.id}/up")  # 已经在最前, 不变
+        assert [s.id for s in service.repo.sources()] == [b.id, a.id]
+        assert "#1" in c.get("/sources").text

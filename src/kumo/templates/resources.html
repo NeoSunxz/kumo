@@ -59,7 +59,7 @@
       <td style="min-width:90px">{% for t in FILTER_TAGS if t in r.tags %}<span class="tag{{ ' hl' if t in ('subtitle','leak') }}">{{ TAG_LABELS[t] }}</span>{% endfor %}</td>
       <td class="muted small nowrap">{{ SOURCE_KINDS.get(r.source, r.source) }} · {{ r.type_name }}{% if r.seeders is not none %} <span title="做种">↑{{ r.seeders }}</span>{% endif %}</td>
       <td class="r nowrap">{{ r.size|size }}</td>
-      <td class="muted small nowrap">{{ (r.posted or '')[:10] }}</td>
+      <td class="muted small nowrap">{{ r.posted|day }}</td>
       <td class="r nowrap">
         {% if r.wanted_id %}<a href="/wanted/{{ r.wanted_id }}">已加入</a>
         {% elif r.magnet and r.number %}<form method="post" action="/resources/{{ r.id }}/download"><button class="sm" title="用这条磁力直接加入下载队列">用这条下载</button></form>

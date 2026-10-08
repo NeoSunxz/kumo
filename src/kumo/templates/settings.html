@@ -9,7 +9,7 @@
 </div>
 {% if message %}<div class="alert {{ 'success' if message == '已保存' else 'error' }}"><span>{{ message }}</span></div>{% endif %}
 <form method="post" action="/settings" style="max-width:920px">
-<input type="hidden" name="_checkboxes" value="prefer_subtitle,require_subtitle,allow_4k,avoid_h265">
+<input type="hidden" name="_checkboxes" value="prefer_subtitle,prefer_leak,require_subtitle,allow_4k,avoid_h265">
 <input type="hidden" name="_sites" value="1">
 
 <div class="section-title" id="download" style="margin-top:0">115 · 下载</div>
@@ -49,14 +49,17 @@
 
 <div class="card">
   <h2>磁力选择规则</h2>
-  <p class="hint" style="margin:-6px 0 12px">挑选作品加入下载队列后，磁力池与各站搜到的磁力按它打分、自动选择；磁力订阅开了「自动」的也只提交符合它的。</p>
+  <p class="hint" style="margin:-6px 0 12px">挑选作品加入下载队列后，磁力池与各站搜到的磁力先按硬性条件（体积、排除词等）过滤，再依次比较：
+    <b>档次</b>（破解+中字 › 中字 › 破解 › 其它）→ <b>来源</b>（<a href="/sources">磁力订阅</a>页上的顺序，按番号搜索各站的结果排最后）→ <b>日期</b>（新的优先）→ 清晰度、做种、体积，第一名自动选中。
+    磁力订阅开了「自动」的也只提交符合硬性条件的。</p>
   <div class="grid">
     <label><span>最小体积（GB，0 不限）</span><input type="number" step="any" name="size_min_gb" value="{{ s.size_min_gb }}"></label>
     <label><span>最大体积（GB，0 不限）</span><input type="number" step="any" name="size_max_gb" value="{{ s.size_max_gb }}"></label>
     <label><span>排除关键词（逗号分隔）</span><input type="text" name="exclude_keywords" value="{{ s.exclude_keywords|join(',') }}"></label>
   </div>
   <div class="checks" style="flex-direction:column">
-  <label class="check"><input type="checkbox" name="prefer_subtitle" {% if s.prefer_subtitle %}checked{% endif %}> 优先中文字幕</label>
+  <label class="check"><input type="checkbox" name="prefer_subtitle" {% if s.prefer_subtitle %}checked{% endif %}> 优先中字</label>
+  <label class="check"><input type="checkbox" name="prefer_leak" {% if s.prefer_leak %}checked{% endif %}> 优先破解</label>
   <label class="check"><input type="checkbox" name="require_subtitle" {% if s.require_subtitle %}checked{% endif %}> 必须有中文字幕（没有就等人工选择）</label>
   <label class="check"><input type="checkbox" name="allow_4k" {% if s.allow_4k %}checked{% endif %}> 允许 4K</label>
   <label class="check"><input type="checkbox" name="avoid_h265" {% if s.avoid_h265 %}checked{% endif %}> 尽量避开 H265（网页播放不用转码）</label>

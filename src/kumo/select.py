@@ -1,12 +1,19 @@
 """磁力打分与选择.
 
 流程: 合并各站点结果 (按 info hash 去重) → 识别标签 → 硬性条件 (番号匹配、体积、排除词、
-必须字幕) 不满足的标记 ``rejected`` → 其余按偏好打分, 最高分自动选中.
+必须字幕) 不满足的标记 ``rejected`` → 其余排序, 第一个自动选中.
 没有任何候选通过硬性条件时返回 ``None``, 由调用方转为「待人工选择」.
+
+排序 (``rank_key``) 是分层的, 前一层相同才比后一层:
+1. 档次: 破解 + 中字 > 中字 > 破解 > 其它 (按设置的「优先中字」「优先破解」)
+2. 来源: 磁力订阅按「磁力订阅」页的顺序, 按番号搜索各站的结果在所有订阅之后
+3. 日期: 新的优先
+4. 分数: 清晰度、避开 H265、做种数、体积
 """
 
 from __future__ import annotations
 
+import email.utils
 import re
 
 from .models import Candidate, Tag
@@ -14,7 +21,8 @@ from .numbers import contains_number, extract_number, has_subtitle_suffix, is_un
 from .settings import Settings
 
 _GB = 1024**3
-_SUBTITLE_WORDS = re.compile(r"中文字幕|中字|字幕|chinese\s*sub|\[ch\]|\bch\b", re.I)
+# 「无字幕」「無字幕」「没有字幕」不算.
+_SUBTITLE_WORDS = re.compile(r"(?<![无無没])(?<!没有)(?:中文字幕|中字|字幕)|chinese\s*sub|\[ch\]|\bch\b", re.I)
 _UHD_WORDS = re.compile(r"\b4k\b|2160p|\buhd\b", re.I)
 _HD_WORDS = re.compile(r"1080p|\bfhd\b|\bhd\b|高清", re.I)
 _H265_WORDS = re.compile(r"h\.?265|x265|hevc", re.I)
@@ -69,6 +77,9 @@ def merge(candidates: list[Candidate]) -> list[Candidate]:
         cur.tags |= cand.tags
         cur.seeders = max(filter(None, (cur.seeders, cand.seeders)), default=None)
         cur.size = cur.size or cand.size
+        cur.published = cur.published or cand.published
+        if cand.rank < cur.rank:
+            cur.rank, cur.origin = cand.rank, cand.origin
         if cand.site not in cur.site.split("+"):
             cur.site = f"{cur.site}+{cand.site}"
     return list(merged.values())
@@ -104,6 +115,8 @@ def evaluate(cand: Candidate, number: str, s: Settings) -> None:
         score += 30
     if s.avoid_h265 and Tag.H265 in cand.tags:
         score -= 40
+    if s.prefer_leak and Tag.LEAK in cand.tags:
+        score += 50
     if cand.seeders is not None:
         score += min(cand.seeders, 50) * 0.5
     if cand.size:
@@ -112,8 +125,35 @@ def evaluate(cand: Candidate, number: str, s: Settings) -> None:
     cand.score = round(score, 1)
 
 
+def tier(cand: Candidate, s: Settings) -> int:
+    """档次: 破解 + 中字 (3) > 中字 (2) > 破解 (1) > 其它 (0); 对应偏好关掉时不算."""
+    return 2 * (s.prefer_subtitle and Tag.SUBTITLE in cand.tags) + (s.prefer_leak and Tag.LEAK in cand.tags)
+
+
+def rank_key(cand: Candidate, s: Settings) -> tuple[bool, int, int, str, float]:
+    """越大越好; 按它降序排列, 第一个就是自动选择的."""
+    return (not cand.rejected, tier(cand, s), -cand.rank, day(cand.published) or "", cand.score)
+
+
+def ranked(candidates: list[Candidate], s: Settings) -> list[Candidate]:
+    return sorted(candidates, key=lambda c: rank_key(c, s), reverse=True)
+
+
 def choose(candidates: list[Candidate], number: str, s: Settings) -> Candidate | None:
     for cand in candidates:
         evaluate(cand, number, s)
     accepted = [c for c in candidates if not c.rejected]
-    return max(accepted, key=lambda c: c.score) if accepted else None
+    return max(accepted, key=lambda c: rank_key(c, s)) if accepted else None
+
+
+def day(text: str | None) -> str | None:
+    """各处的日期写法统一成 ``2026-10-07``: 98堂的 ``2026-10-7 06:00``, sukebei / RSS 的 ``Tue, 07 Oct 2026 ...``."""
+    if not text:
+        return None
+    m = re.search(r"(\d{4})-(\d{1,2})-(\d{1,2})", text)
+    if m:
+        return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+    try:
+        return email.utils.parsedate_to_datetime(text).date().isoformat()
+    except (TypeError, ValueError):
+        return None

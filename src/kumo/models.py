@@ -117,13 +117,19 @@ class Candidate:
     score: float = 0.0
     rejected: str = ""
     """不满足硬性条件的原因; 空串表示可自动选择."""
+    rank: int = 999
+    """来源的优先顺序: 磁力订阅按「磁力订阅」页的排序 (0 最优先), 按番号搜索各站的结果排在所有订阅之后."""
+    origin: str = ""
+    """来自哪条磁力订阅 (显示用)."""
     id: int | None = None
     wanted_id: int | None = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> Candidate:
-        data = dict(row)
+        data = {k: row[k] for k in row.keys() if k in cls.__dataclass_fields__}
         data["tags"] = set(json.loads(data["tags"]))
+        data["origin"] = data.get("origin") or ""
+        data["rank"] = 999 if data.get("rank") is None else data["rank"]
         return cls(**data)
 
 
@@ -195,8 +201,10 @@ SOURCE_KINDS = {"sehuatang": "98堂", "sukebei": "sukebei", "rss": "RSS"}
 class SourceFilter:
     """磁力订阅的入池条件; 都为空表示全部入池. 只看标题, 论坛可以在打开帖子前就判断."""
 
+    tags_all: list[str] = field(default_factory=list)
+    """这些标签都要有 (如「中字 + 破解」)."""
     tags_any: list[str] = field(default_factory=list)
-    """至少有其中一个标签 (如只要「破解」)."""
+    """至少有其中一个标签."""
     tags_none: list[str] = field(default_factory=list)
     """不能有这些标签 (如不要「欧美」)."""
     brackets: list[str] = field(default_factory=list)
@@ -213,6 +221,8 @@ class SourceFilter:
 
     def reject_reason(self, title: str, tags: set[str], brackets: list[str], type_name: str = "", number: str | None = None) -> str:
         """不符合入池条件的原因; 符合时返回空串. 预览页据此逐条说明."""
+        if missing := [t for t in self.tags_all if t not in tags]:
+            return "没有" + "、".join(TAG_LABELS.get(t, t) for t in missing)
         if self.tags_any and not tags & set(self.tags_any):
             return "没有" + "/".join(TAG_LABELS.get(t, t) for t in self.tags_any)
         if hit := tags & set(self.tags_none):
@@ -231,7 +241,10 @@ class SourceFilter:
         return ""
 
     def summary(self) -> list[str]:
-        out = [f"要{TAG_LABELS.get(t, t)}" for t in self.tags_any] + [f"不要{TAG_LABELS.get(t, t)}" for t in self.tags_none]
+        out = ["要" + "+".join(TAG_LABELS.get(t, t) for t in self.tags_all)] if self.tags_all else []
+        if self.tags_any:
+            out.append("要" + "或".join(TAG_LABELS.get(t, t) for t in self.tags_any))
+        out += [f"不要{TAG_LABELS.get(t, t)}" for t in self.tags_none]
         out += [f"片头[{b}]" for b in self.brackets] + [f"分类:{t}" for t in self.types]
         out += [f"+{k}" for k in self.include] + [f"-{k}" for k in self.exclude]
         return out + (["只要有番号"] if self.numbered else [])
@@ -252,6 +265,8 @@ class MagnetSource:
     last_run: float | None = None
     last_error: str = ""
     created_at: float = 0.0
+    priority: int = 0
+    """磁力选择时的优先顺序, 小的优先 (「磁力订阅」页上排序)."""
     id: int | None = None
     found: int = 0
     """入池的磁力数 (查询时统计)."""

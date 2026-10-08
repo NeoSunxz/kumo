@@ -18,7 +18,6 @@ kumo 有两种订阅, 在「挑选作品」汇合, 之后走同一条路:
 from __future__ import annotations
 
 import asyncio
-import email.utils
 import hashlib
 import logging
 import re
@@ -42,7 +41,7 @@ from .numbers import extract_number, has_subtitle_suffix
 from .pan115 import FakePan115, NotAuthorized, OpenClient, Pan115, Pan115Error
 from .sehuatang import Sehuatang
 from .subscriptions import SubscriptionKey, fetch_list, parse_subscription_url
-from .select import brackets, choose, evaluate, merge, title_tags
+from .select import brackets, choose, day, evaluate, merge, title_tags
 from .settings import Settings
 
 log = logging.getLogger("kumo")
@@ -164,7 +163,15 @@ class Service:
         finally:
             await fetcher.aclose()
         if "sehuatang" in s.sites:
-            found += [_resource_candidate(r) for r in self.repo.resources_by_number(wanted.number)]
+            # 磁力池里的磁力带上订阅的优先顺序与名称; 不属于任何订阅的排在订阅之后、搜索结果之前.
+            sources = self.repo.sources()
+            ranks = {src.id: i for i, src in enumerate(sources)}
+            names = {src.id: src.name for src in sources}
+            for r in self.repo.resources_by_number(wanted.number):
+                cand = _resource_candidate(r)
+                cand.rank = ranks.get(r.source_id, len(sources))
+                cand.origin = names.get(r.source_id, "")
+                found.append(cand)
         candidates = merge(found)
         chosen = choose(candidates, wanted.number, s)
         self.repo.replace_candidates(wanted.id, candidates)
@@ -882,7 +889,7 @@ class WorkItem:
         if self.work and self.work.date:
             return self.work.date
         posted = next((m.posted for m in self.magnets if m.posted), None)
-        return _iso_date(posted) if posted else None
+        return day(posted)
 
     @property
     def tags(self) -> set[str]:
@@ -895,17 +902,6 @@ def _forum_tags(forum_name: str, title: str, number: str | None) -> set[str]:
     if "字幕" in forum_name:
         tags.add(Tag.SUBTITLE)
     return tags
-
-
-def _iso_date(text: str) -> str | None:
-    """论坛的 ``2026-10-7 06:00`` 与 RSS 的 ``Tue, 07 Oct 2026 ...`` 都转成 ``2026-10-07``."""
-    m = re.search(r"(\d{4})-(\d{1,2})-(\d{1,2})", text)
-    if m:
-        return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
-    try:
-        return email.utils.parsedate_to_datetime(text).date().isoformat()
-    except (TypeError, ValueError):
-        return None
 
 
 def _recent(r: Resource, days: int) -> bool:

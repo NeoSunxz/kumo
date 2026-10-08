@@ -77,6 +77,8 @@ class Settings(BaseModel):
     size_min_gb: float = Field(default=1.0, ge=0)
     size_max_gb: float = Field(default=12.0, ge=0)
     prefer_subtitle: bool = True
+    prefer_leak: bool = True
+    """优先破解 (有码作品的无码破解版)."""
     require_subtitle: bool = False
     allow_4k: bool = False
     avoid_h265: bool = True

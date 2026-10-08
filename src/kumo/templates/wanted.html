@@ -42,23 +42,28 @@
 {% endif %}
 
 <div class="card flush">
-  <div class="card-head"><h2>磁力选择</h2><span class="muted small">{{ candidates|length }} 个</span></div>
+  <div class="card-head"><h2>磁力选择</h2><span class="muted small">{{ candidates|length }} 个 · 按 档次 › 来源顺序 › 日期 › 分数 排列，第一个自动选中（<a href="/settings#source">规则</a>）</span></div>
   <div class="scroll" style="margin-top:12px">
   <table>
-    <tr><th></th><th>标题</th><th class="r">大小</th><th class="r">做种</th><th>标签</th><th>来源</th><th class="r">分</th><th></th></tr>
+    <tr><th></th><th>#</th><th>档次</th><th>标题</th><th>来源</th><th>日期</th><th class="r">大小</th><th class="r">做种</th><th class="r">分</th><th></th></tr>
     {% for c in candidates %}
+    {% set t = tier(c) %}
     <tr{% if c.rejected %} class="disabled"{% endif %}>
       <td style="width:28px;text-align:center">{% if c.id == w.chosen_id %}<b class="ok" title="已选">✓</b>{% endif %}</td>
-      <td class="break small">{{ c.title }}{% if c.rejected %}<br><span class="bad">✗ {{ c.rejected }}</span>{% endif %}</td>
+      <td class="faint small">{{ loop.index }}</td>
+      <td class="nowrap">{% if t == 3 %}<span class="tag hl">破解+中字</span>{% elif t == 2 %}<span class="tag hl">中字</span>{% elif t == 1 %}<span class="tag hl">破解</span>{% else %}<span class="faint small">-</span>{% endif %}</td>
+      <td class="break small">{{ c.title }}
+        <div>{% for tg in FILTER_TAGS if tg in c.tags and tg not in ('subtitle', 'leak') %}<span class="tag">{{ TAG_LABELS[tg] }}</span>{% endfor %}</div>
+        {% if c.rejected %}<span class="bad">✗ {{ c.rejected }}</span>{% endif %}</td>
+      <td class="small nowrap">{% if c.origin %}<span class="kind">订阅</span> {{ c.origin }}{% else %}<span class="muted">{{ SOURCE_KINDS.get(c.site, c.site) }}</span>{% endif %}</td>
+      <td class="muted small nowrap">{{ c.published|day }}</td>
       <td class="r nowrap">{{ c.size|size }}</td>
       <td class="r">{{ c.seeders if c.seeders is not none else '-' }}</td>
-      <td>{% for t in c.tags|sort %}<span class="tag">{{ TAG_LABELS.get(t, t) }}</span>{% endfor %}</td>
-      <td class="muted small">{{ c.site }}</td>
       <td class="r score">{{ c.score }}</td>
       <td class="r">{% if c.id != w.chosen_id %}<form method="post" action="/wanted/{{ w.id }}/choose/{{ c.id }}"><button class="sm">选这个</button></form>{% endif %}</td>
     </tr>
     {% else %}
-    <tr><td colspan="8"><div class="empty">还没有候选</div></td></tr>
+    <tr><td colspan="10"><div class="empty">还没有候选</div></td></tr>
     {% endfor %}
   </table>
   </div>
