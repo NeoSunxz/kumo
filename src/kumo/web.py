@@ -37,7 +37,7 @@ from .settings import Env, Settings
 
 JOB_LABELS = {
     "search": "搜索磁力", "submit": "提交云下载", "tasks": "刷新下载进度", "sync": "同步 115 目录",
-    "feeds": "读取 RSS", "crawl": "论坛爬取", "subs": "检查订阅", "sukebei": "sukebei 爬取", "amane": "同步 Amane",
+    "feeds": "读取 RSS", "crawl": "98堂爬取", "subs": "检查订阅", "sukebei": "sukebei 爬取", "amane": "同步 Amane",
 }
 
 #: 搜索番号时可选的磁力来源; sehuatang 查的是本地已爬取的资源库.

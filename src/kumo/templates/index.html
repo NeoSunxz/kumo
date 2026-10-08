@@ -11,7 +11,7 @@
     <details class="menu">
       <summary class="btn">立即执行 ▾</summary>
       <div>
-        {% for job, label in [("search","搜索磁力"),("submit","提交云下载"),("tasks","刷新下载进度"),("sync","同步 115 目录"),("feeds","读取 RSS"),("crawl","爬取论坛"),("sukebei","爬取 sukebei"),("amane","同步 Amane")] %}
+        {% for job, label in [("search","搜索磁力"),("submit","提交云下载"),("tasks","刷新下载进度"),("sync","同步 115 目录"),("feeds","读取 RSS"),("crawl","爬取 98堂"),("sukebei","爬取 sukebei"),("amane","同步 Amane")] %}
         <form method="post" action="/run/{{ job }}"><button>{{ label }}</button></form>
         {% endfor %}
       </div>

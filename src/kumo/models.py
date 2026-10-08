@@ -188,7 +188,7 @@ class Resource:
         return cls(**data)
 
 
-SOURCE_KINDS = {"sehuatang": "论坛 sehuatang", "sukebei": "sukebei", "rss": "RSS"}
+SOURCE_KINDS = {"sehuatang": "98堂", "sukebei": "sukebei", "rss": "RSS"}
 
 
 @dataclass

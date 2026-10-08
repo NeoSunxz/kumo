@@ -24,7 +24,7 @@
   </div>
   {% if kind == 'sukebei' %}<div class="checks"><label class="check"><input type="checkbox" name="trusted_only" {% if p.trusted_only %}checked{% endif %}> 只要可信上传者</label></div>{% endif %}
 
-  <div class="muted small" style="margin:6px 0 8px">入池条件（只看标题；都不选表示全部入池。论坛在打开帖子之前就按标题判断，不符合的不再请求）</div>
+  <div class="muted small" style="margin:6px 0 8px">入池条件（只看标题；都不选表示全部入池。98堂在打开帖子之前就按标题判断，不符合的不再请求）</div>
   <div class="chips" style="margin-bottom:8px"><span class="k">必须有</span>
     {% for t in FILTER_TAGS %}<label><input type="checkbox" name="tags_any" value="{{ t }}" {% if f and t in f.tags_any %}checked{% endif %}><span>{{ TAG_LABELS[t] }}</span></label>{% endfor %}
     <span class="faint small">（任一）</span>
@@ -34,7 +34,7 @@
   </div>
   <div class="grid">
     <label><span>片头 [ ] 含（逗号分隔，任一）</span><input type="text" name="brackets" value="{{ f.brackets|join(',') if f else '' }}" placeholder="破解, 中文字幕"></label>
-    {% if kind == 'sehuatang' %}<label><span>论坛分类名（逗号分隔，任一）</span><input type="text" name="types" value="{{ f.types|join(',') if f else '' }}" placeholder="有码高清"></label>{% endif %}
+    {% if kind == 'sehuatang' %}<label><span>98堂分类名（逗号分隔，任一）</span><input type="text" name="types" value="{{ f.types|join(',') if f else '' }}" placeholder="有码高清"></label>{% endif %}
     <label><span>标题包含（逗号分隔，任一）</span><input type="text" name="include" value="{{ f.include|join(',') if f else '' }}"></label>
     <label><span>标题排除（逗号分隔）</span><input type="text" name="exclude" value="{{ f.exclude|join(',') if f else '' }}" placeholder="预告"></label>
   </div>
@@ -51,7 +51,7 @@
     {{ flow('subscribe', 'magnet') }}
   </div>
   <div class="actions">
-    <form class="inline" method="post" action="/run/crawl"><button>爬取全部论坛</button></form>
+    <form class="inline" method="post" action="/run/crawl"><button>爬取全部 98堂</button></form>
     <form class="inline" method="post" action="/run/sukebei"><button>爬取全部 sukebei</button></form>
     <form class="inline" method="post" action="/run/feeds"><button>读取全部 RSS</button></form>
   </div>
@@ -65,7 +65,7 @@
 <div class="bar" style="margin-bottom:12px">
   <b>{{ sources|length }} 条订阅</b><span class="faint small">{{ sources|selectattr('enabled')|list|length }} 条启用</span>
   <span class="spacer"></span>
-  {% for kind, label in [('sehuatang', '+ 论坛板块'), ('sukebei', '+ sukebei'), ('rss', '+ RSS')] %}
+  {% for kind, label in [('sehuatang', '+ 98堂板块'), ('sukebei', '+ sukebei'), ('rss', '+ RSS')] %}
   <button type="button" class="sm" data-panel="add-{{ kind }}">{{ label }}</button>
   {% endfor %}
 </div>
@@ -94,7 +94,7 @@
   {% for src in sources %}
   <div class="src-card{{ ' off' if not src.enabled }}" id="src-{{ src.id }}">
     <div class="head">
-      <span class="kind">{{ {'sehuatang': '论坛', 'sukebei': 'sukebei', 'rss': 'RSS'}[src.kind] }}</span>
+      <span class="kind">{{ {'sehuatang': '98堂', 'sukebei': 'sukebei', 'rss': 'RSS'}[src.kind] }}</span>
       <span class="name" title="{{ src.name }}">{{ src.name }}</span>
       <form class="inline" method="post" action="/sources/{{ src.id }}/toggle"><button class="switch{{ ' on' if src.enabled }}" title="{{ '停用' if src.enabled else '启用' }}（停用后不定时爬取）"><b></b></button></form>
     </div>
@@ -115,18 +115,18 @@
     </div>
   </div>
   {% else %}
-  <div class="card"><div class="empty">还没有磁力订阅，点右上角添加论坛板块、sukebei 搜索或 RSS。</div></div>
+  <div class="card"><div class="empty">还没有磁力订阅，点右上角添加98堂板块、sukebei 搜索或 RSS。</div></div>
   {% endfor %}
 </div>
 
 <details class="card crawl-params"{% if request.query_params.get('flash') == '已保存' %} open{% endif %}>
-<summary><b>爬取参数</b> <span class="faint small">论坛地址 {{ settings.crawl_base_url }} · 翻页 {{ settings.crawl_pages }} · 间隔 论坛 {{ settings.crawl_interval_minutes|int }} / sukebei {{ settings.sukebei_interval_minutes|int }} / RSS {{ settings.feed_interval_minutes|int }} 分钟 · 请求间隔 {{ settings.crawl_request_delay }} 秒</span> ▾</summary>
+<summary><b>爬取参数</b> <span class="faint small">98堂地址 {{ settings.crawl_base_url }} · 翻页 {{ settings.crawl_pages }} · 间隔 98堂 {{ settings.crawl_interval_minutes|int }} / sukebei {{ settings.sukebei_interval_minutes|int }} / RSS {{ settings.feed_interval_minutes|int }} 分钟 · 请求间隔 {{ settings.crawl_request_delay }} 秒</span> ▾</summary>
 <form method="post" action="/settings" style="margin-top:14px">
   <input type="hidden" name="_back" value="/sources">
   <div class="grid">
-    <label><span>论坛地址（换域名时改这里）</span><input type="text" name="crawl_base_url" value="{{ settings.crawl_base_url }}"></label>
-    <label><span>论坛每轮最多翻几页（遇到已见过的帖子即停）</span><input type="number" name="crawl_pages" value="{{ settings.crawl_pages }}" min="1" max="20"></label>
-    <label><span>论坛爬取间隔（分钟）</span><input type="number" step="any" name="crawl_interval_minutes" value="{{ settings.crawl_interval_minutes }}"></label>
+    <label><span>98堂地址（换域名时改这里）</span><input type="text" name="crawl_base_url" value="{{ settings.crawl_base_url }}"></label>
+    <label><span>98堂每轮最多翻几页（遇到已见过的帖子即停）</span><input type="number" name="crawl_pages" value="{{ settings.crawl_pages }}" min="1" max="20"></label>
+    <label><span>98堂爬取间隔（分钟）</span><input type="number" step="any" name="crawl_interval_minutes" value="{{ settings.crawl_interval_minutes }}"></label>
     <label><span>sukebei 爬取间隔（分钟）</span><input type="number" step="any" name="sukebei_interval_minutes" value="{{ settings.sukebei_interval_minutes }}"></label>
     <label><span>RSS 读取间隔（分钟）</span><input type="number" step="any" name="feed_interval_minutes" value="{{ settings.feed_interval_minutes }}"></label>
     <label><span>请求间隔（秒）</span><input type="number" step="any" name="crawl_request_delay" value="{{ settings.crawl_request_delay }}"></label>

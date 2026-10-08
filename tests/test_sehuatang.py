@@ -455,17 +455,17 @@ async def test_source_error_is_recorded_and_others_continue(service: Service, fo
 def test_run_button_gives_feedback(service: Service, tmp_path: Path) -> None:
     with TestClient(create_app(Env(data_dir=tmp_path, password=""), service=service)) as c:
         r = c.post("/run/crawl", headers={"referer": "http://testserver/resources?forum=36"}, follow_redirects=False)
-        assert "没有启用的论坛 sehuatang磁力订阅" in c.get(r.headers["location"]).text
+        assert "没有启用的98堂磁力订阅" in c.get(r.headers["location"]).text
         forum_source(service)
         r = c.post("/run/crawl", headers={"referer": "http://testserver/resources?forum=36&flash=old"}, follow_redirects=False)
         location = r.headers["location"]
         assert location.startswith("/resources?forum=36&flash=") and location.count("flash=") == 1
-        assert "已开始论坛爬取" in c.get(location).text
+        assert "已开始98堂爬取" in c.get(location).text
 
         service.running["crawl"] = 0.0  # 模拟正在运行
         r = c.post("/run/crawl", headers={"referer": "http://testserver/resources"}, follow_redirects=False)
         page = c.get(r.headers["location"]).text
-        assert "论坛爬取已经在运行" in page and "正在运行：论坛爬取" in page
+        assert "98堂爬取已经在运行" in page and "正在运行：98堂爬取" in page
         assert c.post("/run/bogus").status_code == 404
 
 
