@@ -77,8 +77,10 @@ class Amane:
         return Work(number=number, found=False)
 
     async def actor(self, name: str) -> AmaneActor:
-        data = await self._get("/api/actors", {"search": name, "limit": 20})
-        key = "".join(name.split()).casefold()
+        # 资料站的名字可能带空格 (「春陽 モカ」), Amane 的搜索是字面匹配, 去掉空格再搜.
+        key = "".join(name.split())
+        data = await self._get("/api/actors", {"search": key, "limit": 20})
+        key = key.casefold()
         for item in data.get("items") or []:
             if "".join(str(item.get("name", "")).split()).casefold() != key:
                 continue

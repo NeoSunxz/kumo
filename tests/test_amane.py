@@ -75,7 +75,9 @@ async def test_work_matches_exact_number() -> None:
 
 
 async def test_actor_matches_name_ignoring_spaces() -> None:
-    a = await FakeAmane().client().actor("演员甲")
+    fake = FakeAmane()
+    a = await fake.client().actor("演员 甲")
+    assert fake.calls[0].url.params["search"] == "演员甲"
     assert a.found and a.amane_id == 3 and a.image == "/api/resources/a1"
     assert a.profile == {"生日": "2000-01-02", "身高": "158cm", "罩杯": "E"}
 
