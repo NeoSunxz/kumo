@@ -670,9 +670,11 @@ class Service:
                     fetcher, int(src.params["fid"]), 1, int(typeid) if typeid else None  # type: ignore[arg-type]
                 )
                 for ref in refs:
-                    rows.append(self._preview_row(
+                    row = self._preview_row(
                         src, ref.title, ref.type_name, known=self.repo.resource_exists("sehuatang", ref.tid), forum_name=forum_name,
-                    ))
+                    )
+                    row.date = day(ref.posted)
+                    rows.append(row)
             elif src.kind == "sukebei":
                 p = src.params
                 url = Sukebei.rss_url(
@@ -685,7 +687,7 @@ class Service:
                 for item in parse_sukebei_items(text):
                     cand = item.candidate
                     row = self._preview_row(src, cand.title, known=self.repo.resource_exists("sukebei", item.id))
-                    row.size, row.seeders = cand.size, cand.seeders
+                    row.size, row.seeders, row.date = cand.size, cand.seeders, day(cand.published)
                     if not row.reason and p.get("trusted_only") and not item.trusted:
                         row.reason = "上传者不可信"
                     if not row.reason and (cand.seeders or 0) < int(p.get("min_seeders") or 0):  # type: ignore[call-overload]
@@ -854,6 +856,8 @@ class PreviewRow:
     """已经在磁力池里."""
     size: int | None = None
     seeders: int | None = None
+    date: str | None = None
+    """发帖 / 发布日期."""
 
 
 @dataclass

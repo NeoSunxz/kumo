@@ -506,6 +506,7 @@ async def test_preview_does_not_store_or_open_threads(service: Service, forum: t
     rows = await service.preview_source(src)
     assert [(r.number, r.reason) for r in rows] == [("HMN-904", ""), ("HEYZO-3381", "没有破解")]
     assert rows[0].brackets == ["新模型无码破解"] and rows[1].tags == {"uncensored"}
+    assert rows[0].date == "2026-10-07"  # 列表上的发帖日期
     assert service.repo.resources() == [] and not service.repo.is_seen(src.id or 0, "71")
 
     with TestClient(create_app(Env(data_dir=tmp_path, password=""), service=service)) as c:
