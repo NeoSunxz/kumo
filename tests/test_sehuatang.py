@@ -528,3 +528,11 @@ async def test_subtitle_board_counts_as_subtitle_for_filters(service: Service, f
     await service.run_crawl()
     (r,) = service.repo.resources()
     assert r.number == "SERO-124" and "subtitle" in r.tags
+
+
+async def test_preview_saved_source_from_list(service: Service, forum: type[FakeForum], tmp_path: Path) -> None:
+    src = forum_source(service, 36, tags_any=["leak"])
+    forum.pages[36] = [[ref(70, "HMN-904 [新模型无码破解]x", "无码高清"), ref(71, "HEYZO-3381 [自提征用]y", "无码高清")]]
+    with TestClient(create_app(Env(data_dir=tmp_path, password=""), service=service)) as c:
+        page = c.post(f"/sources/{src.id}/preview").text  # 不带表单: 按已保存的「只要破解」
+        assert "1</b> 条会入池" in page and "没有破解" in page

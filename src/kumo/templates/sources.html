@@ -62,71 +62,66 @@
   <option value="151">4K原版</option><option value="2">国产原创</option><option value="38">欧美无码</option>
 </datalist>
 
-<div class="card">
-  <div class="card-head"><h2>添加</h2><span class="muted small">按标签、片头、关键词设入池条件；如亚洲无码板块只要「破解」</span></div>
-  <div style="display:flex;gap:8px;flex-wrap:wrap">
-    {% for kind, label in [('sehuatang', '+ 论坛板块'), ('sukebei', '+ sukebei 搜索'), ('rss', '+ RSS')] %}
-    <details class="menu" style="position:static">
-      <summary class="btn">{{ label }}</summary>
-      <div style="position:static;margin-top:10px;padding:14px;min-width:0;box-shadow:none">
-        <form method="post" action="/sources">{{ fields(None, kind) }}
-          <div class="bar"><button class="primary">添加</button>
-            <button formaction="/sources/preview" title="用这些条件试爬第一页, 看哪些会入池; 不保存">预览</button></div></form>
-      </div>
-    </details>
-    {% endfor %}
-  </div>
+<div class="bar" style="margin-bottom:12px">
+  <b>{{ sources|length }} 条订阅</b><span class="faint small">{{ sources|selectattr('enabled')|list|length }} 条启用</span>
+  <span class="spacer"></span>
+  {% for kind, label in [('sehuatang', '+ 论坛板块'), ('sukebei', '+ sukebei'), ('rss', '+ RSS')] %}
+  <button type="button" class="sm" data-panel="add-{{ kind }}">{{ label }}</button>
+  {% endfor %}
 </div>
 
-{% for src in sources %}
-<div class="card src-card{{ ' off' if not src.enabled }}" id="src-{{ src.id }}">
-  <div class="top">
-    <span class="kind">{{ src.label }}</span>
-    <span class="name">{{ src.name }}</span>
-    <span class="muted small">{{ src.describe() }}</span>
-    <span class="spacer"></span>
-    <form class="inline" method="post" action="/sources/{{ src.id }}/toggle"><button class="switch{{ ' on' if src.enabled }}" title="停用后不再定时爬取"><b></b>启用</button></form>
-    <form class="inline" method="post" action="/sources/{{ src.id }}/auto"><button class="switch{{ ' on' if src.auto_download }}" title="入池后直接进下载队列"><b></b>自动</button></form>
-  </div>
-  <div class="meta">
-    {% for x in src.filter.summary() %}<span class="tag hl">{{ x }}</span>{% else %}<span class="faint">全部入池</span>{% endfor %}
-  </div>
-  <div class="meta" style="align-items:center">
-    <span>入池 <b class="num">{{ src.found }}</b> 条</span>
-    <span>最近爬取 {{ src.last_run|ts }}</span>
-    {% if src.last_error %}<span class="bad">{{ src.last_error }}</span>{% endif %}
-    <span class="spacer"></span>
-    <a class="btn sm ghost" href="/works?origin=magnet&src={{ src.id }}">挑选作品</a>
-    <a class="btn sm ghost" href="/resources?src={{ src.id }}">查看磁力</a>
-    <form class="inline" method="post" action="/sources/{{ src.id }}/preview">
-      {# 用已保存的条件预览: 把当前条件作为表单字段带上 #}
-      {% for k, v in src.params.items() if v is not none and v is not false %}<input type="hidden" name="{{ k }}" value="{{ 'on' if v is true else v }}">{% endfor %}
-      <input type="hidden" name="name" value="{{ src.name }}">
-      {% for t in src.filter.tags_any %}<input type="hidden" name="tags_any" value="{{ t }}">{% endfor %}
-      {% for t in src.filter.tags_none %}<input type="hidden" name="tags_none" value="{{ t }}">{% endfor %}
-      {% for k in ('brackets', 'types', 'include', 'exclude') %}<input type="hidden" name="{{ k }}" value="{{ src.filter[k]|join(',') }}">{% endfor %}
-      {% if src.filter.numbered %}<input type="hidden" name="numbered" value="on">{% endif %}
-      {% if src.auto_download %}<input type="hidden" name="auto_download" value="on">{% endif %}
-      <button class="sm ghost" title="试爬第一页, 看哪些会入池; 不保存">预览</button></form>
-    <form class="inline" method="post" action="/sources/{{ src.id }}/run"><button class="sm">立即爬取</button></form>
-  </div>
-  <details{% if request.query_params.get('edit') == src.id|string %} open{% endif %}>
-    <summary class="faint small" style="padding:0 18px 12px">编辑入池条件 ▾</summary>
-    <div class="edit">
-      <form method="post" action="/sources/{{ src.id }}">{{ fields(src, src.kind) }}
-        <div class="bar"><button class="primary">保存</button>
-          <button formaction="/sources/{{ src.id }}/preview" title="用当前 (含没保存的修改) 条件试爬第一页; 不保存">预览</button><span class="spacer"></span>
-          <button class="danger sm" formaction="/sources/{{ src.id }}/delete" onclick="return confirm('删除「{{ src.name }}」？已入池的磁力保留')">删除订阅</button></div>
-      </form>
-    </div>
-  </details>
+{# 添加 / 编辑表单: 整行宽的面板, 打开时在卡片上方 #}
+{% for kind in ('sehuatang', 'sukebei', 'rss') %}
+<div class="card panel" id="add-{{ kind }}" hidden>
+  <div class="card-head"><h2>添加{{ SOURCE_KINDS[kind] }}订阅</h2><button type="button" class="sm ghost" data-panel="add-{{ kind }}">关闭</button></div>
+  <form method="post" action="/sources">{{ fields(None, kind) }}
+    <div class="bar"><button class="primary">添加</button>
+      <button formaction="/sources/preview" title="用这些条件试爬第一页, 看哪些会入池; 不保存">预览</button></div></form>
 </div>
-{% else %}
-<div class="card"><div class="empty">还没有磁力订阅，在上面添加论坛板块、sukebei 搜索或 RSS。</div></div>
+{% endfor %}
+{% for src in sources %}
+<div class="card panel" id="edit-{{ src.id }}"{% if request.query_params.get('edit') != src.id|string %} hidden{% endif %}>
+  <div class="card-head"><h2>编辑「{{ src.name }}」</h2><button type="button" class="sm ghost" data-panel="edit-{{ src.id }}">关闭</button></div>
+  <form method="post" action="/sources/{{ src.id }}">{{ fields(src, src.kind) }}
+    <div class="bar"><button class="primary">保存</button>
+      <button formaction="/sources/{{ src.id }}/preview" title="用当前 (含没保存的修改) 条件试爬第一页; 不保存">预览</button><span class="spacer"></span>
+      <button class="danger sm" formaction="/sources/{{ src.id }}/delete" onclick="return confirm('删除「{{ src.name }}」？已入池的磁力保留')">删除订阅</button></div>
+  </form>
+</div>
 {% endfor %}
 
-<div class="section-title">爬取参数</div>
-<form method="post" action="/settings" class="card">
+<div class="src-grid">
+  {% for src in sources %}
+  <div class="src-card{{ ' off' if not src.enabled }}" id="src-{{ src.id }}">
+    <div class="head">
+      <span class="kind">{{ {'sehuatang': '论坛', 'sukebei': 'sukebei', 'rss': 'RSS'}[src.kind] }}</span>
+      <span class="name" title="{{ src.name }}">{{ src.name }}</span>
+      <form class="inline" method="post" action="/sources/{{ src.id }}/toggle"><button class="switch{{ ' on' if src.enabled }}" title="{{ '停用' if src.enabled else '启用' }}（停用后不定时爬取）"><b></b></button></form>
+    </div>
+    <div class="desc" title="{{ src.describe() }}">{{ src.describe() }}</div>
+    <div class="conds">
+      {% if src.auto_download %}<span class="tag" style="color:var(--ok)">自动</span>{% endif %}
+      {% for x in src.filter.summary() %}<span class="tag hl">{{ x }}</span>{% else %}<span class="faint small">全部入池</span>{% endfor %}
+    </div>
+    {% if src.last_error %}<div class="bad small" title="{{ src.last_error }}">⚠ {{ src.last_error|truncate(36) }}</div>{% endif %}
+    <div class="foot">
+      <a class="small muted" href="/resources?src={{ src.id }}" title="查看入池的磁力">入池 <b class="num">{{ src.found }}</b></a>
+      <span class="faint small" title="最近爬取">{{ src.last_run|ts }}</span>
+      <span class="spacer"></span>
+      <a class="btn sm ghost" href="/works?origin=magnet&src={{ src.id }}" title="挑选这条订阅的作品">挑选</a>
+      <form class="inline" method="post" action="/sources/{{ src.id }}/preview"><button class="sm ghost" title="试爬第一页, 看哪些会入池; 不保存">预览</button></form>
+      <button type="button" class="sm ghost" data-panel="edit-{{ src.id }}">编辑</button>
+      <form class="inline" method="post" action="/sources/{{ src.id }}/run"><button class="sm">爬取</button></form>
+    </div>
+  </div>
+  {% else %}
+  <div class="card"><div class="empty">还没有磁力订阅，点右上角添加论坛板块、sukebei 搜索或 RSS。</div></div>
+  {% endfor %}
+</div>
+
+<details class="card crawl-params"{% if request.query_params.get('flash') == '已保存' %} open{% endif %}>
+<summary><b>爬取参数</b> <span class="faint small">论坛地址 {{ settings.crawl_base_url }} · 翻页 {{ settings.crawl_pages }} · 间隔 论坛 {{ settings.crawl_interval_minutes|int }} / sukebei {{ settings.sukebei_interval_minutes|int }} / RSS {{ settings.feed_interval_minutes|int }} 分钟 · 请求间隔 {{ settings.crawl_request_delay }} 秒</span> ▾</summary>
+<form method="post" action="/settings" style="margin-top:14px">
   <input type="hidden" name="_back" value="/sources">
   <div class="grid">
     <label><span>论坛地址（换域名时改这里）</span><input type="text" name="crawl_base_url" value="{{ settings.crawl_base_url }}"></label>
@@ -138,4 +133,16 @@
   </div>
   <button class="primary">保存</button>
 </form>
+</details>
+<script>
+document.addEventListener("click", (e) => {
+  const b = e.target.closest("[data-panel]");
+  if (!b) return;
+  const panel = document.getElementById(b.dataset.panel);
+  const show = panel.hidden;
+  document.querySelectorAll(".panel").forEach(p => p.hidden = true);
+  panel.hidden = !show;
+  if (show) { panel.scrollIntoView({block: "nearest"}); panel.querySelector("input:not([type=hidden])")?.focus(); }
+});
+</script>
 {% endblock %}

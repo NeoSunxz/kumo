@@ -369,12 +369,15 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
 
     @app.post("/sources/{source_id}/preview", response_class=HTMLResponse)
     async def preview_source(request: Request, source_id: int) -> Response:
-        """编辑表单上的「预览」: 用改过 (还没保存) 的条件试爬."""
+        """「预览」: 编辑表单上的按改过 (还没保存) 的条件, 列表上的按已保存的条件."""
         src = svc(request).repo.source(source_id)
         if src is None:
             raise HTTPException(404)
+        form = await request.form()
+        if "kind" not in form:
+            return await _preview(request, src)  # 列表上的「预览」: 按已保存的条件
         try:
-            new = _source_from_form(await request.form(), src)
+            new = _source_from_form(form, src)
         except ValueError as exc:
             return back(_with_flash(f"/sources#src-{source_id}", f"预览失败: {exc}"))
         new.id = source_id
