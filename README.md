@@ -44,6 +44,19 @@ services:
 
 没有 AppID 时可以把 AppID 填成 `fake`, 用内存模拟的 115 走通整个流程 (不会真正下载).
 
+### 热加载 (改代码不用重新构建镜像)
+
+把源码挂载进容器并设 `KUMO_RELOAD=1`: `.py` 改动后 kumo 自动重启, 模板改动直接生效 (不重启).
+只有改了 `pyproject.toml` 的依赖才需要重新构建. 重启会中断正在运行的任务 (爬取、同步等), 下一轮调度会重新执行.
+
+```yaml
+    volumes:
+      - ./data:/data
+      - /path/to/kumo/src:/app/src:ro
+    environment:
+      - KUMO_RELOAD=1
+```
+
 ## 接入 Amane
 
 在 Amane「远程发现」里添加订阅 `http://<NAS>:8115/rss.xml` (设了密码则加 `?key=<密码>`), 打开自动入队.
