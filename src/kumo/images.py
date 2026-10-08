@@ -74,6 +74,15 @@ class ImageCache:
 
         return await self._load(url, fetch)
 
+    async def get_with_referer(self, url: str, referer: str, *, proxy: str = "") -> Path:
+        """论坛帖子里的图片: 图床校验 Referer. 地址来自已入库的帖子, 不接受任意地址 (见 web 的 ``/img/res``)."""
+
+        async def fetch() -> httpx.Response:
+            async with httpx.AsyncClient(proxy=proxy or None, timeout=20.0, follow_redirects=True) as client:
+                return await client.get(url, headers={"User-Agent": UA, "Referer": referer})
+
+        return await self._load(url, fetch)
+
     async def get_amane(self, url: str, amane: Amane) -> Path:
         """Amane 作品 / 演员的图片; 缓存键带上 Amane 地址, 换了 Amane 不会串图."""
         from .amane import AmaneError

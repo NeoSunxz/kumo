@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}预览 {{ src.name }} - kumo{% endblock %}
+{% block content %}
+{% set ok = rows|rejectattr('reason')|list %}
+<div class="page-head">
+  <div>
+    <p class="lead" style="margin:0 0 4px"><a href="/sources{{ '#src-' ~ src.id if src.id }}">← 磁力订阅</a></p>
+    <h1>预览：{{ src.name }} <span class="kind">{{ src.label }}</span></h1>
+    <p class="lead">{{ src.describe() }} · 第一页 {{ rows|length }} 条，<b class="ok">{{ ok|length }}</b> 条会入池 · 只是试爬，没有保存{% if src.kind == 'sehuatang' %}，也没有打开帖子（磁力、大小、图片要入池时才取）{% endif %}</p>
+  </div>
+</div>
+<div class="card">
+  <div class="meta" style="display:flex;gap:6px;flex-wrap:wrap">
+    {% for x in src.filter.summary() %}<span class="tag hl">{{ x }}</span>{% else %}<span class="faint small">没有入池条件，全部入池</span>{% endfor %}
+    {% if src.auto_download %}<span class="tag">自动下载</span>{% endif %}
+  </div>
+</div>
+{% if error %}<div class="alert error"><span>{{ error }}</span></div>{% endif %}
+<div class="card flush">
+  <div class="scroll"><table>
+    <tr><th>结果</th><th>番号</th><th>标签</th><th>片头</th><th>标题</th>{% if src.kind == 'sehuatang' %}<th>分类</th>{% else %}<th class="r">大小 / 做种</th>{% endif %}</tr>
+    {% for r in rows %}
+    <tr{% if r.reason %} class="disabled"{% endif %}>
+      <td class="nowrap small">{% if r.reason %}<span class="bad">✗ {{ r.reason }}</span>{% elif r.known %}<span class="muted">✓ 已在池里</span>{% else %}<b class="ok">✓ 入池</b>{% endif %}</td>
+      <td class="num">{{ r.number or '-' }}</td>
+      <td style="min-width:80px">{% for t in FILTER_TAGS if t in r.tags %}<span class="tag{{ ' hl' if t in ('subtitle','leak') }}">{{ TAG_LABELS[t] }}</span>{% endfor %}</td>
+      <td class="small muted">{% for b in r.brackets %}[{{ b }}] {% endfor %}</td>
+      <td class="break small">{{ r.title }}</td>
+      {% if src.kind == 'sehuatang' %}<td class="muted small nowrap">{{ r.type_name }}</td>
+      {% else %}<td class="r small nowrap">{{ r.size|size }}{% if r.seeders is not none %} · ↑{{ r.seeders }}{% endif %}</td>{% endif %}
+    </tr>
+    {% else %}
+    <tr><td colspan="6"><div class="empty">第一页没有内容</div></td></tr>
+    {% endfor %}
+  </table></div>
+</div>
+{% endblock %}

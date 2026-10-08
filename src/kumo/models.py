@@ -78,7 +78,7 @@ class Tag(StrEnum):
 
 
 TAG_LABELS: dict[str, str] = {
-    Tag.SUBTITLE: "字幕",
+    Tag.SUBTITLE: "中字",
     Tag.HD: "高清",
     Tag.UHD: "4K",
     Tag.H265: "H265",
@@ -173,6 +173,8 @@ class Resource:
     """标题里方括号中的标记 (片头 ``[新模型无码破解]`` 等)."""
     source_id: int | None = None
     """入池的磁力订阅."""
+    images: list[str] = field(default_factory=list)
+    """帖子里的图片 (论坛才有); 经 ``/img/res/<id>/<序号>`` 带 Referer 取."""
     crawled_at: float = 0.0
     id: int | None = None
 
@@ -182,6 +184,7 @@ class Resource:
         data["subtitle"] = bool(data["subtitle"])
         data["tags"] = set(json.loads(data.get("tags") or "[]"))
         data["brackets"] = json.loads(data.get("brackets") or "[]")
+        data["images"] = json.loads(data.get("images") or "[]")
         return cls(**data)
 
 
@@ -206,20 +209,26 @@ class SourceFilter:
     """只要识别出番号的."""
 
     def accepts(self, title: str, tags: set[str], brackets: list[str], type_name: str = "", number: str | None = None) -> bool:
+        return not self.reject_reason(title, tags, brackets, type_name, number)
+
+    def reject_reason(self, title: str, tags: set[str], brackets: list[str], type_name: str = "", number: str | None = None) -> str:
+        """不符合入池条件的原因; 符合时返回空串. 预览页据此逐条说明."""
         if self.tags_any and not tags & set(self.tags_any):
-            return False
-        if tags & set(self.tags_none):
-            return False
+            return "没有" + "/".join(TAG_LABELS.get(t, t) for t in self.tags_any)
+        if hit := tags & set(self.tags_none):
+            return "有" + "/".join(TAG_LABELS.get(t, t) for t in sorted(hit))
         if self.brackets and not any(b in br for b in self.brackets for br in brackets):
-            return False
+            return "片头不含 " + "/".join(f"[{b}]" for b in self.brackets)
         if self.types and type_name not in self.types:
-            return False
+            return f"分类「{type_name or '无'}」不在范围内"
         lowered = title.lower()
         if self.include and not any(k.lower() in lowered for k in self.include):
-            return False
-        if any(k.lower() in lowered for k in self.exclude):
-            return False
-        return not (self.numbered and not number)
+            return "标题不含 " + "/".join(self.include)
+        if hit_word := next((k for k in self.exclude if k.lower() in lowered), None):
+            return f"标题含排除词「{hit_word}」"
+        if self.numbered and not number:
+            return "识别不出番号"
+        return ""
 
     def summary(self) -> list[str]:
         out = [f"要{TAG_LABELS.get(t, t)}" for t in self.tags_any] + [f"不要{TAG_LABELS.get(t, t)}" for t in self.tags_none]

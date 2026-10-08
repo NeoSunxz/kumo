@@ -52,12 +52,15 @@ _TEMPLATES.env.filters["img"] = lambda url: f"/img?u={quote(url, safe='')}" if u
 _TEMPLATES.env.filters["amane_img"] = lambda url: f"/img/amane?u={quote(url, safe='')}" if url else ""
 
 
-def _cover(release: Any = None, work: Any = None) -> str:
-    """作品封面 (横图): 资料站封面优先, 没有时用 Amane 的封面或海报."""
+def _cover(release: Any = None, work: Any = None, magnets: Any = ()) -> str:
+    """作品封面 (横图): 资料站封面优先, 其次 Amane 的封面或海报, 最后是论坛帖子里的第一张图."""
     if release is not None and release.cover:
         return f"/img?u={quote(release.cover, safe='')}"
     if work is not None and (work.thumb or work.poster):
         return f"/img/amane?u={quote(work.thumb or work.poster, safe='')}"
+    for m in magnets:
+        if m.images:
+            return f"/img/res/{m.id}/0"
     return ""
 
 
@@ -354,6 +357,36 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
             return back(_with_flash("/sources", f"添加失败: {exc}"))
         return back(_with_flash(f"/sources#src-{src.id}", f"已添加「{src.name}」，点「立即爬取」试一下"))
 
+    @app.post("/sources/preview", response_class=HTMLResponse)
+    async def preview_new_source(request: Request) -> Response:
+        """添加表单上的「预览」: 用表单里的条件试爬, 不保存."""
+        form = await request.form()
+        try:
+            src = _source_from_form(form, MagnetSource(kind=str(form.get("kind") or ""), name=""))
+        except ValueError as exc:
+            return back(_with_flash("/sources", f"预览失败: {exc}"))
+        return await _preview(request, src)
+
+    @app.post("/sources/{source_id}/preview", response_class=HTMLResponse)
+    async def preview_source(request: Request, source_id: int) -> Response:
+        """编辑表单上的「预览」: 用改过 (还没保存) 的条件试爬."""
+        src = svc(request).repo.source(source_id)
+        if src is None:
+            raise HTTPException(404)
+        try:
+            new = _source_from_form(await request.form(), src)
+        except ValueError as exc:
+            return back(_with_flash(f"/sources#src-{source_id}", f"预览失败: {exc}"))
+        new.id = source_id
+        return await _preview(request, new)
+
+    async def _preview(request: Request, src: MagnetSource) -> HTMLResponse:
+        try:
+            rows, error = await svc(request).preview_source(src), ""
+        except SiteError as exc:
+            rows, error = [], str(exc)
+        return page(request, "source_preview.html", src=src, rows=rows, error=error)
+
     @app.post("/sources/{source_id}")
     async def edit_source(request: Request, source_id: int) -> RedirectResponse:
         repo = svc(request).repo
@@ -550,6 +583,21 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
     async def image(request: Request, u: str) -> Response:
         try:
             path = await request.app.state.images.get(u, proxy=svc(request).settings.scrape_proxy)
+        except ImageError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        return FileResponse(path, headers={"Cache-Control": "public, max-age=2592000"})
+
+    @app.get("/img/res/{resource_id}/{index}")
+    async def resource_image(request: Request, resource_id: int, index: int) -> Response:
+        """磁力池里论坛帖子的图片; 只取入库时记下的地址, 带论坛的 Referer (图床不带会 403)."""
+        s = svc(request)
+        res = s.repo.resource(resource_id)
+        if res is None or not 0 <= index < len(res.images):
+            raise HTTPException(404)
+        try:
+            path = await request.app.state.images.get_with_referer(
+                res.images[index], s.settings.crawl_base_url.rstrip("/") + "/", proxy=s.settings.scrape_proxy
+            )
         except ImageError as exc:
             raise HTTPException(404, str(exc)) from exc
         return FileResponse(path, headers={"Cache-Control": "public, max-age=2592000"})

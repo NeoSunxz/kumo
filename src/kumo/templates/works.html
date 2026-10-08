@@ -68,7 +68,7 @@
   <div class="scroll"><table>
     <tr><th style="width:36px"></th><th></th><th>番号 / 标题</th><th>发行</th><th>来源</th><th>磁力池</th><th>状态</th><th></th></tr>
     {% for it in items %}
-    {% set img = cover(it.release, it.work) %}
+    {% set img = cover(it.release, it.work, it.magnets) %}
     {% set handled = it.wanted or it.owned %}
     <tr{% if handled or it.dismissed %} class="disabled"{% endif %}>
       <td><input type="checkbox" name="ids" value="{{ it.number }}" {% if handled %}disabled{% endif %}></td>
@@ -80,7 +80,7 @@
         {% if it.work and it.work.actors %}<div class="faint small">{{ it.work.actors[:4]|join('、') }}</div>{% endif %}
       </td>
       <td class="muted small nowrap">{{ it.date or '-' }}</td>
-      <td class="small">
+      <td class="small" style="min-width:150px">
         {% if it.release %}<div><span class="kind">片源</span> <span class="muted">{{ it.subs_name }}</span></div>{% endif %}
         {% if it.sources %}<div><span class="kind">磁力</span> <span class="muted">{{ it.sources|join('、') }}</span></div>{% endif %}
       </td>

@@ -50,9 +50,10 @@
 
 <div class="card flush">
   <div class="scroll"><table>
-    <tr><th>番号</th><th>标题</th><th>标签</th><th>来源</th><th class="r">大小</th><th>发表</th><th></th></tr>
+    <tr><th></th><th>番号</th><th>标题</th><th>标签</th><th>来源</th><th class="r">大小</th><th>发表</th><th></th></tr>
     {% for r in items %}
     <tr>
+      <td style="width:76px;padding-right:0">{% if r.images %}<a href="/img/res/{{ r.id }}/0" target="_blank"><div style="width:68px;aspect-ratio:16/10.7;border-radius:5px;background:var(--surface-2) url('/img/res/{{ r.id }}/0') center/cover" title="{{ r.images|length }} 张图"></div></a>{% endif %}</td>
       <td class="nowrap"><span class="num">{{ r.number or '-' }}</span></td>
       <td class="break small">{{ r.title }}</td>
       <td style="min-width:90px">{% for t in FILTER_TAGS if t in r.tags %}<span class="tag{{ ' hl' if t in ('subtitle','leak') }}">{{ TAG_LABELS[t] }}</span>{% endfor %}</td>
@@ -67,7 +68,7 @@
       </td>
     </tr>
     {% else %}
-    <tr><td colspan="7"><div class="empty">没有符合条件的磁力</div></td></tr>
+    <tr><td colspan="8"><div class="empty">没有符合条件的磁力</div></td></tr>
     {% endfor %}
   </table></div>
 </div>

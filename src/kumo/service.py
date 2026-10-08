@@ -548,7 +548,7 @@ class Service:
                     known += 1
                     continue
                 number = extract_number(ref.title)
-                if not src.filter.accepts(ref.title, title_tags(ref.title, number), brackets(ref.title), ref.type_name, number):
+                if not src.filter.accepts(ref.title, _forum_tags(forum_name, ref.title, number), brackets(ref.title), ref.type_name, number):
                     self.repo.mark_seen(src.id, key)
                     continue
                 await asyncio.sleep(s.crawl_request_delay)
@@ -560,15 +560,13 @@ class Service:
                     continue
                 title = detail.title or ref.title
                 number = extract_number(title)
-                tags = title_tags(title, number)
-                if "字幕" in forum_name:
-                    tags.add(Tag.SUBTITLE)
+                tags = _forum_tags(forum_name, title, number)
                 self._pool(src, Resource(
                     source="sehuatang", tid=ref.tid, forum_id=fid, forum_name=forum_name, type_id=ref.type_id,
                     type_name=ref.type_name, title=title, number=number, magnet=detail.magnet,
                     info_hash=info_hash_of(detail.magnet) if detail.magnet else None, size=detail.size,
                     posted=detail.posted or ref.posted, subtitle=Tag.SUBTITLE in tags, tags=tags, brackets=brackets(title),
-                    source_id=src.id,
+                    source_id=src.id, images=detail.images,
                 ))
                 added += 1
             if known or not refs:
@@ -652,6 +650,62 @@ class Service:
                 ))
                 added += 1
         return added
+
+    async def preview_source(self, src: MagnetSource) -> list[PreviewRow]:
+        """试爬第一页: 列出每条识别出的番号、标签、片头, 以及是否入池与原因; 不入库, 也不打开论坛帖子."""
+        s = self.settings
+        rows: list[PreviewRow] = []
+        fetcher = Fetcher(proxy=s.scrape_proxy, flaresolverr_url=s.flaresolverr_url)
+        try:
+            if src.kind == "sehuatang":
+                typeid = src.params.get("typeid")
+                forum_name, refs = await Sehuatang(s.crawl_base_url).forum_page(
+                    fetcher, int(src.params["fid"]), 1, int(typeid) if typeid else None  # type: ignore[arg-type]
+                )
+                for ref in refs:
+                    rows.append(self._preview_row(
+                        src, ref.title, ref.type_name, known=self.repo.resource_exists("sehuatang", ref.tid), forum_name=forum_name,
+                    ))
+            elif src.kind == "sukebei":
+                p = src.params
+                url = Sukebei.rss_url(
+                    query=str(p.get("query") or ""), user=str(p.get("user") or ""),
+                    category=str(p.get("category") or "2_2"), trusted_only=bool(p.get("trusted_only")),
+                )
+                status, text = await fetcher.get_text(url)
+                if status != 200:
+                    raise SiteError(f"sukebei 返回 HTTP {status}")
+                for item in parse_sukebei_items(text):
+                    cand = item.candidate
+                    row = self._preview_row(src, cand.title, known=self.repo.resource_exists("sukebei", item.id))
+                    row.size, row.seeders = cand.size, cand.seeders
+                    if not row.reason and p.get("trusted_only") and not item.trusted:
+                        row.reason = "上传者不可信"
+                    if not row.reason and (cand.seeders or 0) < int(p.get("min_seeders") or 0):  # type: ignore[call-overload]
+                        row.reason = f"做种不足 {p.get('min_seeders')}"
+                    rows.append(row)
+            else:
+                async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as http:
+                    try:
+                        entries = parse_feed((await http.get(str(src.params.get("url") or ""))).text)
+                    except (httpx.HTTPError, ValueError) as exc:
+                        raise SiteError(f"读取 RSS 失败: {exc}") from exc
+                for entry in entries:
+                    row = self._preview_row(src, entry.title, known=src.id is not None and self.repo.is_seen(src.id, entry.key))
+                    if not row.reason and entry.number is None:
+                        row.reason = "识别不出番号"
+                    rows.append(row)
+        finally:
+            await fetcher.aclose()
+        return rows
+
+    def _preview_row(
+        self, src: MagnetSource, title: str, type_name: str = "", *, known: bool = False, forum_name: str = ""
+    ) -> PreviewRow:
+        number = extract_number(title)
+        tags, marks = _forum_tags(forum_name, title, number), brackets(title)
+        reason = src.filter.reject_reason(title, tags, marks, type_name, number)
+        return PreviewRow(title=title, number=number, tags=tags, brackets=marks, type_name=type_name, reason=reason, known=known)
 
     async def run_amane(self) -> None:
         """按番号把 Amane 里的作品信息 (海报、封面、演员) 缓存下来, 订阅的女优按名称缓存头像与资料."""
@@ -779,6 +833,23 @@ class ActressGroup:
 
 
 @dataclass
+class PreviewRow:
+    """磁力订阅预览的一条."""
+
+    title: str
+    number: str | None
+    tags: set[str]
+    brackets: list[str]
+    type_name: str = ""
+    reason: str = ""
+    """不入池的原因; 空串表示会入池."""
+    known: bool = False
+    """已经在磁力池里."""
+    size: int | None = None
+    seeders: int | None = None
+
+
+@dataclass
 class WorkItem:
     """「挑选作品」的一行: 一个番号, 合并了片源订阅的作品与磁力池里它的磁力."""
 
@@ -816,6 +887,14 @@ class WorkItem:
     @property
     def tags(self) -> set[str]:
         return set().union(*(m.tags for m in self.magnets)) if self.magnets else set()
+
+
+def _forum_tags(forum_name: str, title: str, number: str | None) -> set[str]:
+    """标题识别的标签; 字幕板块 (高清中文字幕) 的帖子都算中字, 标题里不一定写."""
+    tags = title_tags(title, number)
+    if "字幕" in forum_name:
+        tags.add(Tag.SUBTITLE)
+    return tags
 
 
 def _iso_date(text: str) -> str | None:

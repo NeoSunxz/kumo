@@ -69,7 +69,9 @@
     <details class="menu" style="position:static">
       <summary class="btn">{{ label }}</summary>
       <div style="position:static;margin-top:10px;padding:14px;min-width:0;box-shadow:none">
-        <form method="post" action="/sources">{{ fields(None, kind) }}<button class="primary">添加</button></form>
+        <form method="post" action="/sources">{{ fields(None, kind) }}
+          <div class="bar"><button class="primary">添加</button>
+            <button formaction="/sources/preview" title="用这些条件试爬第一页, 看哪些会入池; 不保存">预览</button></div></form>
       </div>
     </details>
     {% endfor %}
@@ -96,13 +98,24 @@
     <span class="spacer"></span>
     <a class="btn sm ghost" href="/works?origin=magnet&src={{ src.id }}">挑选作品</a>
     <a class="btn sm ghost" href="/resources?src={{ src.id }}">查看磁力</a>
+    <form class="inline" method="post" action="/sources/{{ src.id }}/preview">
+      {# 用已保存的条件预览: 把当前条件作为表单字段带上 #}
+      {% for k, v in src.params.items() if v is not none and v is not false %}<input type="hidden" name="{{ k }}" value="{{ 'on' if v is true else v }}">{% endfor %}
+      <input type="hidden" name="name" value="{{ src.name }}">
+      {% for t in src.filter.tags_any %}<input type="hidden" name="tags_any" value="{{ t }}">{% endfor %}
+      {% for t in src.filter.tags_none %}<input type="hidden" name="tags_none" value="{{ t }}">{% endfor %}
+      {% for k in ('brackets', 'types', 'include', 'exclude') %}<input type="hidden" name="{{ k }}" value="{{ src.filter[k]|join(',') }}">{% endfor %}
+      {% if src.filter.numbered %}<input type="hidden" name="numbered" value="on">{% endif %}
+      {% if src.auto_download %}<input type="hidden" name="auto_download" value="on">{% endif %}
+      <button class="sm ghost" title="试爬第一页, 看哪些会入池; 不保存">预览</button></form>
     <form class="inline" method="post" action="/sources/{{ src.id }}/run"><button class="sm">立即爬取</button></form>
   </div>
   <details{% if request.query_params.get('edit') == src.id|string %} open{% endif %}>
     <summary class="faint small" style="padding:0 18px 12px">编辑入池条件 ▾</summary>
     <div class="edit">
       <form method="post" action="/sources/{{ src.id }}">{{ fields(src, src.kind) }}
-        <div class="bar"><button class="primary">保存</button><span class="spacer"></span>
+        <div class="bar"><button class="primary">保存</button>
+          <button formaction="/sources/{{ src.id }}/preview" title="用当前 (含没保存的修改) 条件试爬第一页; 不保存">预览</button><span class="spacer"></span>
           <button class="danger sm" formaction="/sources/{{ src.id }}/delete" onclick="return confirm('删除「{{ src.name }}」？已入池的磁力保留')">删除订阅</button></div>
       </form>
     </div>

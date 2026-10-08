@@ -94,6 +94,7 @@ CREATE TABLE IF NOT EXISTS resource (
     tags        TEXT,
     brackets    TEXT,
     source_id   INTEGER,
+    images      TEXT,
     crawled_at  REAL NOT NULL,
     UNIQUE (source, tid)
 );
@@ -227,6 +228,8 @@ class Repo:
             self._conn.execute("ALTER TABLE resource ADD COLUMN tags TEXT")
             self._conn.execute("ALTER TABLE resource ADD COLUMN brackets TEXT")
             self._conn.execute("ALTER TABLE resource ADD COLUMN source_id INTEGER")
+        if cols and "images" not in cols:
+            self._conn.execute("ALTER TABLE resource ADD COLUMN images TEXT")
         cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(subscription)")}
         if cols and "avatar" not in cols:
             self._conn.execute("ALTER TABLE subscription ADD COLUMN avatar TEXT")
@@ -433,12 +436,13 @@ class Repo:
         with self._tx() as c:
             c.execute(
                 "INSERT OR IGNORE INTO resource(source, tid, forum_id, forum_name, type_id, type_name, title, number,"
-                " magnet, info_hash, size, posted, subtitle, seeders, tags, brackets, source_id, crawled_at)"
-                " VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " magnet, info_hash, size, posted, subtitle, seeders, tags, brackets, source_id, images, crawled_at)"
+                " VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     r.source, r.tid, r.forum_id, r.forum_name, r.type_id, r.type_name, r.title, r.number,
                     r.magnet, r.info_hash, r.size, r.posted, int(r.subtitle), r.seeders,
-                    json.dumps(sorted(r.tags)), json.dumps(r.brackets, ensure_ascii=False), r.source_id, time.time(),
+                    json.dumps(sorted(r.tags)), json.dumps(r.brackets, ensure_ascii=False), r.source_id,
+                    json.dumps(r.images), time.time(),
                 ),
             )
             row = c.execute("SELECT * FROM resource WHERE source = ? AND tid = ?", (r.source, r.tid)).fetchone()

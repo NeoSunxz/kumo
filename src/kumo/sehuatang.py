@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import html
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
 from .magnets import Fetcher, SiteError
@@ -29,6 +29,8 @@ _FIRST_POST = re.compile(r'<td class="t_f" id="postmessage_\d+">(.*?)</td>', re.
 _MAGNET = re.compile(r"magnet:\?xt=urn:btih:[0-9A-Za-z]{32,40}")
 _SIZE = re.compile(r"【影片容量】\s*[:：]\s*([\d.]+\s*[KMGT]i?B?)", re.I)
 _CENSORED = re.compile(r"【是否有码】\s*[:：]\s*([^\s<【]+)")
+_IMG = re.compile(r"<img\b[^>]*>", re.I)
+_IMG_ATTR = re.compile(r'\b(?:zoomfile|file|src)="(https?://[^"]+)"', re.I)
 _POSTED = re.compile(r'发表于 <span title="([^"]+)"|发表于 ([0-9]{4}-[0-9-]+ [0-9:]+)')
 
 
@@ -49,6 +51,8 @@ class ThreadDetail:
     size: int | None
     censored: str | None
     posted: str | None
+    images: list[str] = field(default_factory=list)
+    """正文里的图片 (通常第一张是封面, 后面是截图); 图床要带论坛的 Referer 才能取."""
 
 
 def is_age_gate(text: str) -> bool:
@@ -93,6 +97,11 @@ def parse_thread(tid: int, text: str) -> ThreadDetail:
         size_text += "B"  # 帖子里常写成 5.29G
     censored = _CENSORED.search(plain)
     posted = _POSTED.search(text)
+    images: list[str] = []
+    for tag in _IMG.findall(body):
+        m = _IMG_ATTR.search(tag)
+        if m and "static/image" not in m.group(1) and m.group(1) not in images:
+            images.append(html.unescape(m.group(1)))
     return ThreadDetail(
         tid=tid,
         title=html.unescape(subject.group(1)).strip() if subject else "",
@@ -100,6 +109,7 @@ def parse_thread(tid: int, text: str) -> ThreadDetail:
         size=parse_size(size_text) if size_text else None,
         censored=censored.group(1).strip() if censored else None,
         posted=(posted.group(1) or posted.group(2)) if posted else None,
+        images=images[:8],
     )
 
 

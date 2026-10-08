@@ -49,6 +49,10 @@ def test_parse_thread_page() -> None:
     assert d.size == int(5.29 * 1024**3)
     assert d.censored == "有码"
     assert d.posted == "2026-10-07 06:04:06"
+    assert d.images == [
+        "https://tu.djhdhs.us/tupian/forum/202610/07/060350w3ir5qr3er4kni89.jpg",
+        "https://tu.djhdhs.us/tupian/forum/202610/07/060350e50l0oam035qkqpm.jpg",
+    ]
 
 
 def test_parse_thread_without_magnet() -> None:
@@ -463,3 +467,64 @@ def test_run_button_gives_feedback(service: Service, tmp_path: Path) -> None:
         page = c.get(r.headers["location"]).text
         assert "论坛爬取已经在运行" in page and "正在运行：论坛爬取" in page
         assert c.post("/run/bogus").status_code == 404
+
+
+# --- 帖子图片与预览 ---
+
+
+async def test_crawl_keeps_thread_images_and_serves_them_with_referer(
+    service: Service, forum: type[FakeForum], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    forum_source(service)
+    forum.pages[103] = [[ref(90, "ABC-090")]]
+    forum.details[90] = detail(90, "ABC-090")
+    forum.details[90].images = ["https://img.example/a.jpg"]
+    await service.run_crawl()
+    (r,) = service.repo.resources()
+    assert r.images == ["https://img.example/a.jpg"]
+
+    calls: list[tuple[str, str]] = []
+
+    async def get_with_referer(self: object, url: str, referer: str, *, proxy: str = "") -> Path:
+        calls.append((url, referer))
+        path = tmp_path / "a.jpg"
+        path.write_bytes(b"\xff\xd8")
+        return path
+
+    monkeypatch.setattr("kumo.images.ImageCache.get_with_referer", get_with_referer)
+    with TestClient(create_app(Env(data_dir=tmp_path, password=""), service=service)) as c:
+        assert c.get(f"/img/res/{r.id}/0").content == b"\xff\xd8"
+        assert calls == [("https://img.example/a.jpg", "https://www.sehuatang.net/")]
+        assert c.get(f"/img/res/{r.id}/1").status_code == 404 and c.get("/img/res/999/0").status_code == 404
+        # 没有资料站封面与 Amane 时, 挑选作品用帖子的图
+        assert f"/img/res/{r.id}/0" in c.get("/works").text
+
+
+async def test_preview_does_not_store_or_open_threads(service: Service, forum: type[FakeForum], tmp_path: Path) -> None:
+    src = forum_source(service, 36, tags_any=["leak"])
+    forum.pages[36] = [[ref(70, "HMN-904 [新模型无码破解]x", "无码高清"), ref(71, "HEYZO-3381 [自提征用]y", "无码高清")]]
+    rows = await service.preview_source(src)
+    assert [(r.number, r.reason) for r in rows] == [("HMN-904", ""), ("HEYZO-3381", "没有破解")]
+    assert rows[0].brackets == ["新模型无码破解"] and rows[1].tags == {"uncensored"}
+    assert service.repo.resources() == [] and not service.repo.is_seen(src.id or 0, "71")
+
+    with TestClient(create_app(Env(data_dir=tmp_path, password=""), service=service)) as c:
+        # 编辑表单里改了条件 (不要无码) 还没保存, 预览按改过的算
+        page = c.post(f"/sources/{src.id}/preview", data={"kind": "sehuatang", "fid": "36", "tags_none": ["uncensored"]}).text
+        assert "1</b> 条会入池" in page and "有无码" in page
+        page = c.post("/sources/preview", data={"kind": "sehuatang", "fid": "36"}).text
+        assert "2</b> 条会入池" in page and "没有保存" in page
+        assert len(service.repo.sources()) == 1
+        r = c.post("/sources/preview", data={"kind": "sehuatang", "fid": "x"}, follow_redirects=False)
+        assert r.status_code == 303
+
+
+async def test_subtitle_board_counts_as_subtitle_for_filters(service: Service, forum: type[FakeForum]) -> None:
+    """字幕板块的帖子标题里不一定写「中文字幕」; 入池条件「必须有中字」不能因此挡掉."""
+    src = forum_source(service, 103, tags_any=["subtitle"])
+    forum.pages[103] = [[ref(95, "SERO-0124 [自提征用]空姐")]]
+    forum.details[95] = detail(95, "SERO-0124 [自提征用]空姐")
+    assert [r.reason for r in await service.preview_source(src)] == [""]
+    await service.run_crawl()
+    (r,) = service.repo.resources()
+    assert r.number == "SERO-124" and "subtitle" in r.tags

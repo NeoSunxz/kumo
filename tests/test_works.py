@@ -331,3 +331,17 @@ def test_old_database_gets_pool_columns_and_tags(tmp_path: Path) -> None:
     conn.close()
     (r,) = Repo(path).resources()
     assert r.seeders is None and r.tags == {"leak"} and r.brackets == ["新模型无码破解"] and r.source_id is None
+
+
+async def test_sukebei_preview_explains_each_item(service: Service, sukebei: dict[str, str]) -> None:
+    src = source(service, query="x", trusted_only=True, min_seeders=3, filter=SourceFilter(tags_any=["subtitle"]))
+    sukebei[Sukebei.rss_url(query="x", category="2_2", trusted_only=True)] = rss(
+        (1, "ABC-001 中文字幕", 5, "5.0 GiB", True),
+        (2, "ABC-002 中文字幕", 1, "5.0 GiB", True),
+        (3, "ABC-003 中文字幕", 9, "5.0 GiB", False),
+        (4, "ABC-004", 9, "5.0 GiB", True),
+    )
+    rows = await service.preview_source(src)
+    assert [r.reason for r in rows] == ["", "做种不足 3", "上传者不可信", "没有中字"]
+    assert rows[0].seeders == 5 and rows[0].size == 5 * GiB
+    assert service.repo.resources() == []
