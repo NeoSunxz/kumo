@@ -54,8 +54,13 @@ _TEMPLATES.env.filters["img"] = lambda url: f"/img?u={quote(url, safe='')}" if u
 _TEMPLATES.env.filters["amane_img"] = lambda url: f"/img/amane?u={quote(url, safe='')}" if url else ""
 
 
-def _cover(release: Any = None, work: Any = None, magnets: Any = ()) -> str:
-    """作品封面 (横图): 资料站封面优先, 其次 Amane 的封面或海报, 最后是论坛帖子里的第一张图."""
+def _cover(release: Any = None, work: Any = None, magnets: Any = (), *, hires: bool = False) -> str:
+    """作品封面 (横图): 资料站封面优先 (800×538, 列表里够用且加载快), 其次 Amane 的封面或海报, 最后是论坛帖子里的第一张图.
+
+    ``hires``: 作品页的大图, Amane 的封面优先 (多为 DMM 原图, 2000 多像素宽).
+    """
+    if hires and work is not None and work.thumb:
+        return f"/img/amane?u={quote(work.thumb, safe='')}"
     if release is not None and release.cover:
         return f"/img?u={quote(release.cover, safe='')}"
     if work is not None and (work.thumb or work.poster):

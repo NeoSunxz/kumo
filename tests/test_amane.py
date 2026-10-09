@@ -225,6 +225,7 @@ def test_work_page_with_amane(service: Service, amane: FakeAmane, tmp_path: Path
         assert f'href="/actresses/{sub.id}"' in page  # 订阅了的演员链到女优页
         assert "http://amane:8000/actors/4" in page  # 没订阅的链到 Amane
         assert "/img/amane?u=https%3A%2F%2Fimg.example%2Ff1.jpg" in page  # 剧照来自 Amane
+        assert "/img/amane?u=https%3A%2F%2Fimg.example%2Ft.jpg" in page  # 主图用 Amane 的高清封面
         assert "https://www.sehuatang.net/thread-555-1-1.html" in page and "破解" in page and "2026-10-07" in page
         assert "http://amane:8000/meta/8" in page and "https://www.javbus.com/ABC-001" in page
         assert service.repo.works(["ABC-001"])["ABC-001"].amane_id == 8

@@ -1,13 +1,13 @@
 {% extends "base.html" %}
 {% block title %}{{ d.number }} - kumo{% endblock %}
 {% block content %}
-{% set img = cover(d.release, d.work, d.pool_resources) %}
+{% set img = cover(d.release, d.work, d.pool_resources, hires=True) %}
 {% set a = d.amane %}
 <p class="lead muted" style="margin:0 0 10px"><a href="javascript:history.length > 1 ? history.back() : location.assign('/')">← 返回</a></p>
 {% if d.amane_error %}<div class="alert"><span>Amane：{{ d.amane_error }}</span></div>{% endif %}
 
 <div class="card work-hero">
-  <a class="wcover{{ ' wide' if d.release and d.release.cover }}" {% if img %}href="{{ img }}" target="_blank" style="background-image:url('{{ img }}')"{% endif %}>{% if not img %}<span>{{ d.number }}</span>{% endif %}</a>
+  <a class="wcover{{ ' wide' if (d.work and d.work.thumb) or (d.release and d.release.cover) }}" {% if img %}href="{{ img }}" target="_blank" style="background-image:url('{{ img }}')"{% endif %}>{% if not img %}<span>{{ d.number }}</span>{% endif %}</a>
   <div class="winfo">
     <div class="wtop">
       <h1 class="num">{{ d.number }}</h1>
