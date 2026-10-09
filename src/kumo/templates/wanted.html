@@ -3,7 +3,7 @@
 {% block content %}
 <div class="page-head">
   <div>
-    <p class="lead" style="margin:0 0 4px"><a href="/">← 下载队列</a></p>
+    <p class="lead" style="margin:0 0 4px"><a href="/queue">← 下载队列</a></p>
     <h1><span class="num">{{ w.number }}</span> <span class="badge s-{{ w.status.value }}">{{ STATUS_LABELS[w.status] }}{% if w.status.value == 'downloading' %} {{ w.percent|round|int }}%{% endif %}</span></h1>
     <p class="lead">来源 {{ w.source }} · 添加 {{ w.created_at|ts }} · 搜索 {{ w.searched_at|ts }}{% if w.submitted_at %} · 提交 {{ w.submitted_at|ts }}{% endif %}</p>
   </div>

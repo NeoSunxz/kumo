@@ -168,7 +168,7 @@ def test_pages_use_amane_content(service: Service, amane: FakeAmane, tmp_path: P
     w = service.repo.wanted_by_number("ABC-001")
     assert w
     with TestClient(create_app(Env(data_dir=tmp_path, password=""), service=service)) as c:
-        assert "Amane 标题" in c.get("/").text
+        assert "Amane 标题" in c.get("/queue").text
         detail = c.get(f"/wanted/{w.id}").text
         assert "/img/amane?u=%2Fapi%2Fresources%2Ft1" in detail and "http://amane:8000/meta/8" in detail
         img = c.get("/img/amane", params={"u": "/api/resources/t1"})

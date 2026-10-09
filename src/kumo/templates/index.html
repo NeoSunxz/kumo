@@ -33,12 +33,12 @@
 <div class="card flush">
   <div style="padding:14px 18px 0">
     <div class="filters">
-      <a href="/" class="{% if not status %}on{% endif %}">全部 <b>{{ counts.values()|sum }}</b></a>
+      <a href="/queue" class="{% if not status %}on{% endif %}">全部 <b>{{ counts.values()|sum }}</b></a>
       {% for st, label in STATUS_LABELS.items() %}
-        {% if counts.get(st.value) %}<a href="/?status={{ st.value }}" class="{% if status == st.value %}on{% endif %}">{{ label }} <b>{{ counts[st.value] }}</b></a>{% endif %}
+        {% if counts.get(st.value) %}<a href="/queue?status={{ st.value }}" class="{% if status == st.value %}on{% endif %}">{{ label }} <b>{{ counts[st.value] }}</b></a>{% endif %}
       {% endfor %}
     </div>
-    <form method="get" action="/" class="bar" style="margin-bottom:14px">
+    <form method="get" action="/queue" class="bar" style="margin-bottom:14px">
       <input type="hidden" name="status" value="{{ status }}">
       <input type="search" name="q" value="{{ q }}" placeholder="搜索番号">
       <button>搜索</button>

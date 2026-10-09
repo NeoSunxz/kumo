@@ -84,6 +84,7 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
         app.state.service = svc
         app.state.device_auth = None
         app.state.images = ImageCache(env.data_dir / "img")
+        svc.images = app.state.images
         if service is None:
             svc.start()
         yield
@@ -126,7 +127,7 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
 
     # --- 番号列表 ---
 
-    @app.get("/", response_class=HTMLResponse)
+    @app.get("/queue", response_class=HTMLResponse)
     async def index(request: Request, status: str = "", q: str = "") -> HTMLResponse:
         repo = svc(request).repo
         statuses = [WantedStatus(status)] if status in WantedStatus._value2member_map_ else None
@@ -146,7 +147,7 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
         parsed = [n for n in (parse_input(t) for t in re.split(r"[\n,，;；]+", numbers)) if n]
         svc(request).add_numbers(parsed)
         asyncio.create_task(svc(request).run_guarded("search", svc(request).run_search))
-        return back("/")
+        return back("/queue")
 
     @app.get("/wanted/{wanted_id}", response_class=HTMLResponse)
     async def wanted_detail(request: Request, wanted_id: int) -> HTMLResponse:
@@ -195,7 +196,7 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
             s.repo.update_wanted(wanted_id, status=WantedStatus.IGNORED)
         elif action == "delete":
             s.repo.delete_wanted(wanted_id)
-            return back("/")
+            return back("/queue")
         else:
             raise HTTPException(400, "未知操作")
         return back(f"/wanted/{wanted_id}")
@@ -519,12 +520,14 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
         query = [(k, v) for k, v in request.query_params.multi_items()]
         return back("/works?" + urlencode([("origin", "subs"), *query]))
 
+    @app.get("/", response_class=HTMLResponse)
     @app.get("/works", response_class=HTMLResponse)
     async def works(
         request: Request, origin: str = "", sub: str = "", src: str = "", q: str = "", days_: str = Query("", alias="days"),
-        todo: str = "1", message: str = "",
+        todo: str = "1", message: str = "", shown_: str = Query("", alias="n"),
     ) -> HTMLResponse:
         days = _opt_int(days_)
+        shown = max(_opt_int(shown_) or _PAGE, _PAGE)
         s = svc(request)
         try:
             sub_ids, source_ids = _int_list(sub), _int_list(src)
@@ -533,15 +536,19 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
         tags = [t for t in request.query_params.getlist("tag") if t in TAG_LABELS]
         items = s.works(
             origin=origin if origin in ("subs", "magnet") else "", sub_ids=sub_ids, source_ids=source_ids, tags=tags,
-            search=q.strip(), days=days, todo=todo == "1",
+            search=q.strip(), days=days, todo=todo == "1", limit=shown + 1,
         )
+        more = len(items) > shown
+        items = items[:shown]
+        query = [(k, v) for k, v in request.query_params.multi_items() if k not in ("n", "message")]
+        more_url = f"{request.url.path}?{urlencode([*query, ('n', shown + _PAGE)])}"
         params = {k: v for k, v in (("sub", sub), ("q", q.strip()), ("days", days)) if v}
         rss_url = str(request.base_url) + "rss/releases.xml" + ("?" + urlencode(params) if params else "")
         if env.password:
             rss_url += ("&" if params else "?") + "key=<密码>"
         return page(
             request, "works.html", items=items, subs=s.repo.subscriptions(), sources=s.repo.sources(), origin=origin, sub=sub,
-            src=src, tags=tags, q=q, days=days, todo=todo, message=message, rss_url=rss_url,
+            src=src, tags=tags, q=q, days=days, todo=todo, message=message, rss_url=rss_url, more=more, more_url=more_url,
         )
 
     @app.post("/works/{action}")
@@ -565,7 +572,7 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
         else:
             raise HTTPException(400, "未知操作")
         referer = urlsplit(request.headers.get("referer") or "/works")
-        path = referer.path if referer.path.startswith(("/works", "/actresses")) else "/works"
+        path = referer.path if referer.path == "/" or referer.path.startswith(("/works", "/actresses")) else "/works"
         query = [(k, v) for k, v in parse_qsl(referer.query) if k != "message"] + [("message", message)]
         return back(f"{path}?{urlencode(query)}")
 
@@ -838,6 +845,10 @@ def _source_from_form(form: Any, src: MagnetSource) -> MagnetSource:
         kind=kind, name=data.get("name", "").strip() or str(default_name), params=params, filter=flt,
         enabled=src.enabled, auto_download="auto_download" in data,
     )
+
+
+#: 挑选作品每次多显示的数量.
+_PAGE = 120
 
 
 def _opt_int(text: str) -> int | None:

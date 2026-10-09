@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -537,3 +538,21 @@ async def test_preview_saved_source_from_list(service: Service, forum: type[Fake
     with TestClient(create_app(Env(data_dir=tmp_path, password=""), service=service)) as c:
         page = c.post(f"/sources/{src.id}/preview").text  # 不带表单: 按已保存的「只要破解」
         assert "1</b> 条会入池" in page and "没有破解" in page
+
+
+async def test_crawl_prefetches_cover(service: Service, forum: type[FakeForum]) -> None:
+    fetched: list[tuple[str, str]] = []
+
+    class Cache:
+        async def get_with_referer(self, url: str, referer: str, *, proxy: str = "") -> Path:
+            fetched.append((url, referer))
+            return Path("x")
+
+    service.images = Cache()  # type: ignore[assignment]
+    forum_source(service)
+    forum.pages[103] = [[ref(96, "ABC-096")]]
+    forum.details[96] = detail(96, "ABC-096")
+    forum.details[96].images = ["https://img.example/c.jpg", "https://img.example/d.jpg"]
+    await service.run_crawl()
+    await asyncio.gather(*service._prefetching)
+    assert fetched == [("https://img.example/c.jpg", "https://www.sehuatang.net/")]

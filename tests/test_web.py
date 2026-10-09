@@ -17,7 +17,7 @@ def client_for(service: Service, tmp_path: Path, password: str = "") -> TestClie
 
 def test_pages_render(service: Service, tmp_path: Path) -> None:
     with client_for(service, tmp_path) as c:
-        for path in ("/", "/settings", "/auth", "/library", "/events", "/health"):
+        for path in ("/", "/queue", "/settings", "/auth", "/library", "/events", "/health"):
             assert c.get(path).status_code == 200, path
 
 

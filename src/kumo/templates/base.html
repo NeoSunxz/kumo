@@ -306,6 +306,46 @@ label.tile.queued .pick { display: none; }
 .chips input.neg:checked + span { background: color-mix(in srgb, var(--bad) 9%, transparent); color: var(--bad); border-color: color-mix(in srgb, var(--bad) 40%, transparent); }
 .chips .k { font-size: 12px; color: var(--faint); margin-right: 2px; min-width: 52px; }
 .chips input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* 挑选作品: 封面网格 (参照 JavDB 列表) */
+.filterbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; padding: 10px 14px; margin-bottom: 12px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
+.filterbar select { width: auto; max-width: 220px; padding: 5px 8px; font-size: 13px; }
+.filterbar input[type=search] { padding: 5px 10px; font-size: 13px; }
+.filterbar .tabs a { padding: 4px 10px; }
+.wgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 12px; }
+.wcard { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; display: flex; flex-direction: column;
+  box-shadow: var(--shadow); transition: border-color .15s, box-shadow .15s; min-width: 0; }
+.wcard:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); box-shadow: 0 4px 14px rgba(20,24,30,.1); }
+.wcard:has(.pick input:checked) { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
+.wcard.done { opacity: .55; }
+.wpic { position: relative; display: block; margin: 0; aspect-ratio: 16 / 10.7; background: var(--surface-2) center top / cover no-repeat; cursor: pointer; }
+.wpic.wide { background-position: right center; }
+.wpic .ph { position: absolute; inset: 0; display: grid; place-items: center; color: var(--faint); font-family: var(--mono); font-size: 13px; }
+.wpic .pick { position: absolute; top: 6px; left: 6px; width: 20px; height: 20px; border-radius: 5px; display: grid; place-items: center;
+  background: rgba(255,255,255,.92); box-shadow: 0 1px 3px rgba(0,0,0,.3); }
+.wpic .pick input { width: 13px; height: 13px; }
+.wpic .marks { position: absolute; left: 6px; bottom: 6px; display: flex; gap: 3px; flex-wrap: wrap; }
+.wpic .m { font-style: normal; font-size: 10.5px; font-weight: 600; line-height: 1.5; padding: 0 5px; border-radius: 4px; color: #fff; background: rgba(20,24,30,.72); }
+.wpic .m-subtitle { background: #2f7d4f; }
+.wpic .m-leak { background: #b2462e; }
+.wpic .m-uncensored { background: #7a4fb0; }
+.wpic .m-western { background: #2f5d8c; }
+.wpic .m.soon { background: var(--warn); }
+.wpic .mcount { position: absolute; right: 6px; top: 6px; font-size: 10.5px; font-weight: 600; padding: 0 5px; border-radius: 4px;
+  background: rgba(20,24,30,.72); color: #fff; }
+.wbody { padding: 6px 8px 7px; display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.wrow { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; }
+.wrow .num { font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wrow .small { font-size: 11px; white-space: nowrap; }
+.wtitle { font-size: 12px; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; min-height: 2.9em; }
+.wsub { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wfoot { display: flex; gap: 4px; align-items: center; margin-top: auto; padding-top: 4px; }
+.wfoot .badge { font-size: 11px; padding: 0 7px; }
+.wfoot .wsrc { font-size: 11px; color: var(--faint); }
+.wfoot .src { font-size: 10.5px; padding: 0 4px; }
+.wfoot button.sm { padding: 1px 7px; font-size: 11.5px; }
+@media (max-width: 860px) { .wgrid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; } }
+
 /* 磁力订阅: 小卡片网格 */
 .src-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; margin-bottom: 16px; }
 .src-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow);
@@ -360,10 +400,10 @@ button.switch { border: 0; background: none; padding: 2px 4px; }
     {{ nav('/sources', '磁力订阅', '<path d="M6 3v8a6 6 0 0 0 12 0V3M6 7h4M14 7h4"/>') }}
     {{ nav('/actresses', '女优', '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>') }}
     <div class="nav-group">挑选</div>
-    <a href="/works" class="{{ 'on' if request.url.path.startswith('/works') }}" title="最近 7 天新出现、待挑选的作品"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 9h18M8 5v4M16 5v4"/></svg>挑选作品{% if todo_new %}<span class="count-pill">{{ todo_new }}</span>{% endif %}</a>
+    <a href="/" class="{{ 'on' if request.url.path == '/' or request.url.path.startswith('/works') }}" title="最近 7 天新出现、待挑选的作品"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 9h18M8 5v4M16 5v4"/></svg>挑选作品{% if todo_new %}<span class="count-pill">{{ todo_new }}</span>{% endif %}</a>
     {{ nav('/resources', '全部磁力', '<path d="M4 6h16M4 12h16M4 18h10"/>') }}
     <div class="nav-group">115 · 下载</div>
-    <a href="/" class="{{ 'on' if request.url.path == '/' or request.url.path.startswith('/wanted') }}"><svg viewBox="0 0 24 24"><path d="M12 3v12m0 0-4-4m4 4 4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>下载队列</a>
+    <a href="/queue" class="{{ 'on' if request.url.path.startswith(('/queue', '/wanted')) }}"><svg viewBox="0 0 24 24"><path d="M12 3v12m0 0-4-4m4 4 4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>下载队列</a>
     {{ nav('/library', '目录同步', '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>') }}
     {{ nav('/auth', '授权', '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>') }}
     <div class="nav-group">系统</div>

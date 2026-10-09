@@ -445,3 +445,13 @@ def test_delete_resources_by_source_and_subscription(service: Service, tmp_path:
         c.post("/resources/delete", data={"source": "sehuatang"})
         assert {x.tid for x in service.repo.resources()} == {2}
         assert c.post("/resources/delete", data={}).status_code == 400
+
+
+def test_works_page_shows_more(service: Service, tmp_path: Path) -> None:
+    for i in range(130):
+        add_res(service, 1000 + i, f"ABC-{300 + i}", f"ABC-{300 + i}")
+    with TestClient(create_app(Env(data_dir=tmp_path, password=""), service=service)) as c:
+        page = c.get("/?origin=magnet").text
+        assert page.count('name="ids"') == 120 and "显示更多" in page and "n=240" in page
+        page = c.get("/?origin=magnet&n=240").text
+        assert page.count('name="ids"') == 130 and "显示更多</a>" not in page

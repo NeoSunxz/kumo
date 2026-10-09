@@ -31,6 +31,7 @@ import httpx
 
 from .amane import Amane, AmaneError
 from .db import Repo
+from .images import ImageCache, ImageError
 from .feeds import parse_feed, torrent_to_magnet
 from .magnets import SITES, Fetcher, SiteError, Sukebei, parse_sukebei_items
 from .models import (
@@ -66,6 +67,9 @@ class Service:
         self.last_error: dict[str, str] = {}
         self.running: dict[str, float] = {}
         """正在运行的任务与开始时间, 页面据此显示进度."""
+        self.images: ImageCache | None = None
+        """网页的图片缓存; 设了的话, 98堂帖子入池时顺带把封面取回来, 打开页面时不用现取."""
+        self._prefetching: set[asyncio.Task[None]] = set()
         self._migrate_sources()
 
     def _migrate_sources(self) -> None:
@@ -575,10 +579,29 @@ class Service:
                     posted=detail.posted or ref.posted, subtitle=Tag.SUBTITLE in tags, tags=tags, brackets=brackets(title),
                     source_id=src.id, images=detail.images,
                 ))
+                if detail.images:
+                    self._prefetch(detail.images[0])
                 added += 1
             if known or not refs:
                 break
         return added
+
+    def _prefetch(self, url: str) -> None:
+        """后台取回帖子的封面放进缓存; 失败不要紧, 打开页面时还会再取."""
+        if self.images is None:
+            return
+        referer = self.settings.crawl_base_url.rstrip("/") + "/"
+        cache, proxy = self.images, self.settings.scrape_proxy
+
+        async def fetch() -> None:
+            try:
+                await cache.get_with_referer(url, referer, proxy=proxy)
+            except ImageError as exc:
+                log.info("prefetch %s failed: %s", url, exc)
+
+        task = asyncio.create_task(fetch())
+        self._prefetching.add(task)
+        task.add_done_callback(self._prefetching.discard)
 
     async def run_sukebei(self, *, source_id: int | None = None) -> None:
         async with self._locks["sukebei"]:
