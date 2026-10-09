@@ -65,18 +65,20 @@
     {% set handled = it.wanted or it.owned %}
     {% set upcoming = it.release and it.release.date and it.release.date > today() %}
     <div class="wcard{% if handled or it.dismissed %} done{% endif %}">
-      <label class="wpic{{ ' wide' if it.release and it.release.cover }}" {% if img %}style="background-image:url('{{ img }}')"{% endif %}>
+      <div class="wpicwrap">
+      <a class="wpic{{ ' wide' if it.release and it.release.cover }}" href="/works/{{ it.number|urlencode }}" {% if img %}style="background-image:url('{{ img }}')"{% endif %}>
         {% if not img %}<span class="ph">{{ it.number }}</span>{% endif %}
-        <span class="pick"><input type="checkbox" name="ids" value="{{ it.number }}" {% if handled %}disabled{% endif %}></span>
         <span class="marks">
           {% if upcoming %}<i class="m soon">待发行</i>{% endif %}
           {% for t in ('subtitle', 'leak', 'uncensored', 'western') if t in it.tags %}<i class="m m-{{ t }}">{{ TAG_LABELS[t] }}</i>{% endfor %}
         </span>
         {% if it.magnets %}<span class="mcount" title="{% for m in it.magnets %}{{ m.title }}&#10;{% endfor %}">磁 {{ it.magnets|length }}</span>{% endif %}
-      </label>
+      </a>
+      <label class="pick" title="勾选"><input type="checkbox" name="ids" value="{{ it.number }}" {% if handled %}disabled{% endif %}></label>
+      </div>
       <div class="wbody">
         <div class="wrow">
-          {% if it.release %}<a class="num" href="{{ it.release.url }}" target="_blank" rel="noreferrer">{{ it.number }}</a>{% else %}<span class="num">{{ it.number }}</span>{% endif %}
+          <a class="num" href="/works/{{ it.number|urlencode }}">{{ it.number }}</a>
           <span class="faint small" title="{{ '发行' if it.release else '发帖' }}">{{ it.date or '' }}</span>
         </div>
         <div class="wtitle" title="{{ it.title }}">{{ it.title }}</div>

@@ -24,12 +24,13 @@ import re
 import time
 from collections.abc import Callable
 from typing import Any
+from urllib.parse import quote
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
 import httpx
 
-from .amane import Amane, AmaneError
+from .amane import Amane, AmaneDetail, AmaneError
 from .db import Repo
 from .images import ImageCache, ImageError
 from .feeds import parse_feed, torrent_to_magnet
@@ -42,7 +43,7 @@ from .numbers import extract_number, has_subtitle_suffix
 from .pan115 import FakePan115, NotAuthorized, OpenClient, Pan115, Pan115Error
 from .sehuatang import Sehuatang
 from .subscriptions import SubscriptionKey, fetch_list, parse_subscription_url
-from .select import brackets, choose, day, evaluate, merge, title_tags
+from .select import brackets, choose, day, evaluate, merge, ranked, title_tags
 from .settings import Settings
 
 log = logging.getLogger("kumo")
@@ -70,6 +71,7 @@ class Service:
         self.images: ImageCache | None = None
         """网页的图片缓存; 设了的话, 98堂帖子入池时顺带把封面取回来, 打开页面时不用现取."""
         self._prefetching: set[asyncio.Task[None]] = set()
+        self._detail_cache: dict[int, tuple[float, AmaneDetail]] = {}
         self._migrate_sources()
 
     def _migrate_sources(self) -> None:
@@ -167,15 +169,7 @@ class Service:
         finally:
             await fetcher.aclose()
         if "sehuatang" in s.sites:
-            # 磁力池里的磁力带上订阅的优先顺序与名称; 不属于任何订阅的排在订阅之后、搜索结果之前.
-            sources = self.repo.sources()
-            ranks = {src.id: i for i, src in enumerate(sources)}
-            names = {src.id: src.name for src in sources}
-            for r in self.repo.resources_by_number(wanted.number):
-                cand = _resource_candidate(r)
-                cand.rank = ranks.get(r.source_id, len(sources))
-                cand.origin = names.get(r.source_id, "")
-                found.append(cand)
+            found += self._pool_candidates(self.repo.resources_by_number(wanted.number))
         candidates = merge(found)
         chosen = choose(candidates, wanted.number, s)
         self.repo.replace_candidates(wanted.id, candidates)
@@ -190,6 +184,78 @@ class Service:
             wanted.id, status=status, note=note, chosen_id=chosen.id if chosen else None, searched_at=now
         )
         return status
+
+    def _pool_candidates(self, resources: list[Resource]) -> list[Candidate]:
+        """磁力池的磁力转成候选, 带上订阅的优先顺序与名称; 不属于任何订阅的排在订阅之后、搜索结果之前."""
+        sources = self.repo.sources()
+        ranks = {src.id: i for i, src in enumerate(sources)}
+        names = {src.id: src.name for src in sources}
+        out = []
+        for r in resources:
+            if not r.magnet:
+                continue
+            cand = _resource_candidate(r)
+            cand.rank = ranks.get(r.source_id, len(sources))
+            cand.origin = names.get(r.source_id, "")
+            out.append(cand)
+        return out
+
+    async def work_detail(self, number: str) -> WorkDetail:
+        """作品页: 作品库、磁力池、Amane、下载队列里关于这个番号的一切."""
+        s = self.settings
+        key = number.upper()
+        release = self.repo.releases_by_numbers([key]).get(key)
+        resources = self.repo.resources_for_number(number)
+        work = self.repo.works([key]).get(key)
+        detail, amane_error = None, ""
+        amane = self.amane()
+        if amane is not None:
+            try:
+                if work is None:
+                    # 没缓存过 (或上次没找到) 就现查一次, 结果照常缓存.
+                    work = await amane.work(number)
+                    self.repo.save_work(work)
+                    work = work if work.found else None
+                if work is not None and work.amane_id:
+                    detail = await self._amane_detail(amane, work.amane_id)
+            except AmaneError as exc:
+                amane_error = str(exc)
+            finally:
+                await amane.aclose()
+        pool = self._pool_candidates(resources)
+        by_hash = {r.info_hash: r for r in resources if r.info_hash}
+        for cand in pool:
+            evaluate(cand, number, s)
+        magnets = [(c, by_hash.get(c.info_hash)) for c in ranked(pool, s)]
+        names = detail.actors if detail else (work.actors if work else [])
+        stars = {_name_key(sub.name): sub for sub in self.repo.subscriptions(kind="star")}
+        actors = []
+        for name in names:
+            sub = stars.get(_name_key(name))
+            cached = self.repo.amane_actor(name)
+            actors.append(ActorRef(
+                name=name, sub_id=sub.id if sub else None,
+                avatar=sub.avatar if sub and sub.avatar else None,
+                amane_avatar=cached.image if cached and cached.found else None,
+                amane_id=(detail.actor_ids.get(name) if detail else None) or (cached.amane_id if cached and cached.found else None),
+            ))
+        return WorkDetail(
+            number=release.number if release else number, release=release,
+            subs=self.repo.release_subscriptions(release.id) if release and release.id else [],
+            magnets=magnets, others=[r for r in resources if not r.magnet], work=work, amane=detail,
+            amane_error=amane_error, actors=actors,
+            wanted=self.repo.wanted_by_number(number), owned=self.repo.owned(number),
+            dismissed=bool(self.repo.dismissed_numbers([key])),
+        )
+
+    async def _amane_detail(self, amane: Amane, amane_id: int) -> AmaneDetail:
+        """Amane 作品详情, 缓存 10 分钟 (翻看作品页时不用每次都请求)."""
+        hit = self._detail_cache.get(amane_id)
+        if hit and time.time() - hit[0] < 600:
+            return hit[1]
+        detail = await amane.detail(amane_id)
+        self._detail_cache[amane_id] = (time.time(), detail)
+        return detail
 
     def choose_candidate(self, wanted_id: int, candidate_id: int) -> None:
         cand = self.repo.candidate(candidate_id)
@@ -862,6 +928,58 @@ class ActressGroup:
     @property
     def sub_ids(self) -> list[int]:
         return [s.id for s in self.subs if s.id]
+
+
+@dataclass
+class ActorRef:
+    """作品页上的一位演员: 订阅了就链到女优页, 头像资料站优先、其次 Amane."""
+
+    name: str
+    sub_id: int | None = None
+    avatar: str | None = None
+    amane_avatar: str | None = None
+    amane_id: int | None = None
+
+
+@dataclass
+class WorkDetail:
+    number: str
+    release: Release | None
+    subs: list[Subscription]
+    magnets: list[tuple[Candidate, Resource | None]]
+    """磁力池里的磁力, 按磁力选择的顺序 (档次 › 订阅顺序 › 日期 › 分数)."""
+    others: list[Resource]
+    """磁力池里没有磁力的帖子 / 条目."""
+    work: Work | None
+    amane: AmaneDetail | None
+    amane_error: str
+    actors: list[ActorRef]
+    wanted: Wanted | None
+    owned: list[LibraryFile]
+    dismissed: bool
+
+    @property
+    def title(self) -> str:
+        for t in (self.amane.title if self.amane else "", self.work.title if self.work else "",
+                  self.release.title if self.release else ""):
+            if t:
+                return t
+        return self.magnets[0][0].title if self.magnets else (self.others[0].title if self.others else "")
+
+    @property
+    def pool_resources(self) -> list[Resource]:
+        return [r for _, r in self.magnets if r is not None]
+
+    @property
+    def images(self) -> list[tuple[str, str]]:
+        """剧照: (显示地址, 原图地址); Amane 的剧照优先, 没有就用 98堂帖子里的图."""
+        if self.amane and self.amane.fanart:
+            return [(f"/img/amane?u={quote(u, safe='')}", u) for u in self.amane.fanart]
+        out = []
+        for _, r in self.magnets:
+            if r is not None:
+                out += [(f"/img/res/{r.id}/{i}", u) for i, u in enumerate(r.images)]
+        return out[:24]
 
 
 @dataclass

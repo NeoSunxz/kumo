@@ -50,7 +50,7 @@
       <div class="pic" {% if img %}style="background-image:url('{{ img }}')"{% endif %}>
         {% if r.date and r.date > today() %}<span class="corner pill soon">待发行</span>{% endif %}</div>
       <div class="body">
-        <span class="num">{{ r.number }}</span>
+        <a class="num" href="/works/{{ r.number|urlencode }}">{{ r.number }}</a>
         <span class="title" title="{{ r.title }}">{{ r.title or (work.title if work else '') }}</span>
         {% if key in owned_set or pool.get(key) or work %}<div class="flags">
           {% if key in owned_set %}<span class="src owned">115 已有</span>{% endif %}

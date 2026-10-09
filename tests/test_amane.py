@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 from kumo.amane import Amane, AmaneError
 from kumo.images import ImageCache
-from kumo.models import AmaneActor, Release, Resource, Subscription, Work
+from kumo.models import AmaneActor, MagnetSource, Release, Resource, Subscription, Work
 from kumo.service import Service
 from kumo.settings import Env, Settings
 from kumo.web import create_app
@@ -46,6 +46,14 @@ class FakeAmane:
             q = request.url.params.get("search", "").casefold()
             items = [i for i in METADATA["items"] if q in i["number"].casefold()]
             return httpx.Response(200, json={"items": items, "total": len(items)})
+        if path == "/api/metadata/8":
+            return httpx.Response(200, json={
+                "metadata": {**METADATA["items"][1], "plot": "简介文字", "series": "某系列", "directors": ["某导演"],
+                             "tags": ["单体作品", "4K"], "runtime": 97, "score": 4.46,
+                             "extrafanart_urls": {"dmm": ["https://img.example/f1.jpg", "https://img.example/f2.jpg"]},
+                             "trailer_urls": ["https://img.example/t.mp4"]},
+                "files": [{"id": 1}], "actor_ids": {"演员甲": 3, "演员乙": 4},
+            })
         if path == "/api/actors":
             return httpx.Response(200, json=ACTORS)
         if path.startswith("/api/resources"):
@@ -195,3 +203,39 @@ def test_settings_amane_test_button(service: Service, amane: FakeAmane, tmp_path
         assert "Amane 连接失败" in c.post("/settings/amane-test").text and "token" in c.post("/settings/amane-test").text
         monkeypatch.setattr(Service, "amane", lambda self: None)
         assert "还没有填写 Amane 地址" in c.post("/settings/amane-test").text
+
+
+def test_work_page_with_amane(service: Service, amane: FakeAmane, tmp_path: Path) -> None:
+    sub = service.repo.add_subscription(Subscription(source="javbus", kind="star", ident="1", uncensored=False, name="演员甲"))
+    assert sub.id
+    service.repo.add_release(Release(source="javbus", number="ABC-001", title="作品库标题", date="2026-09-01", cover=None,
+                                     url="https://www.javbus.com/ABC-001"), sub.id)
+    src = service.repo.add_source(MagnetSource(kind="sehuatang", name="高清中字", params={"fid": 103}))
+    service.repo.add_resource(Resource(source="sehuatang", tid=555, forum_id=103, forum_name="高清中文字幕", type_name="",
+                                       title="ABC-001 [新模型无码破解]", number="ABC-001", magnet="magnet:?xt=urn:btih:" + "a" * 40,
+                                       info_hash="a" * 40, size=5 * 1024**3, posted="2026-10-07 06:00:00", source_id=src.id,
+                                       images=["https://img.example/p.jpg"]))
+    with TestClient(create_app(Env(data_dir=tmp_path, password=""), service=service)) as c:
+        page = c.get("/works/ABC-001").text  # 没缓存过: 现查 Amane
+        assert "标题" in page and "简介文字" in page and "某系列" in page and "某导演" in page and "97 分钟" in page
+        assert f'href="/actresses/{sub.id}"' in page  # 订阅了的演员链到女优页
+        assert "http://amane:8000/actors/4" in page  # 没订阅的链到 Amane
+        assert "/img/amane?u=https%3A%2F%2Fimg.example%2Ff1.jpg" in page  # 剧照来自 Amane
+        assert "https://www.sehuatang.net/thread-555-1-1.html" in page and "破解" in page and "2026-10-07" in page
+        assert "http://amane:8000/meta/8" in page and "https://www.javbus.com/ABC-001" in page
+        assert service.repo.works(["ABC-001"])["ABC-001"].amane_id == 8
+        calls = len(amane.calls)
+        c.get("/works/ABC-001")
+        assert len([x for x in amane.calls[calls:] if x.url.path == "/api/metadata/8"]) == 0  # 详情缓存 10 分钟
+        missing = c.get("/works/NOPE-999")
+        assert missing.status_code == 404 and "都没有这个番号的记录" in missing.text and "加入下载队列" in missing.text
+        assert 'href="/works/ABC-001"' in c.get("/").text
+
+
+def test_work_page_without_amane(service: Service, tmp_path: Path) -> None:
+    service.repo.add_resource(Resource(source="sehuatang", tid=556, forum_id=103, forum_name="", type_name="",
+                                       title="XYZ-002 中文字幕", number="XYZ-002", magnet="magnet:?xt=urn:btih:" + "b" * 40,
+                                       info_hash="b" * 40, images=["https://img.example/p.jpg", "https://img.example/q.jpg"]))
+    with TestClient(create_app(Env(data_dir=tmp_path, password=""), service=service)) as c:
+        page = c.get("/works/XYZ-002").text
+        assert "XYZ-002 中文字幕" in page and "来自 98堂帖子" in page and "/img/res/1/1" in page and "加入下载队列" in page

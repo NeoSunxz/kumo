@@ -507,6 +507,18 @@ class Repo:
         params.append(limit)
         return [Resource.from_row(r) for r in self._all(sql, params)]
 
+    def resources_for_number(self, number: str) -> list[Resource]:
+        """磁力池里这个番号的全部资源 (含没有磁力的), 作品页用."""
+        rows = self._all("SELECT * FROM resource WHERE number = ? ORDER BY crawled_at DESC", (number,))
+        return [Resource.from_row(r) for r in rows]
+
+    def release_subscriptions(self, release_id: int) -> list[Subscription]:
+        rows = self._all(
+            "SELECT s.* FROM subscription s JOIN release_sub rs ON rs.subscription_id = s.id WHERE rs.release_id = ?",
+            (release_id,),
+        )
+        return [Subscription.from_row(r) for r in rows]
+
     def resources_by_number(self, number: str) -> list[Resource]:
         rows = self._all("SELECT * FROM resource WHERE number = ? AND magnet IS NOT NULL", (number,))
         return [Resource.from_row(r) for r in rows]

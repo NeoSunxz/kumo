@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block title %}{{ d.number }} - kumo{% endblock %}
+{% block content %}
+{% set img = cover(d.release, d.work, d.pool_resources) %}
+{% set a = d.amane %}
+<p class="lead muted" style="margin:0 0 10px"><a href="javascript:history.length > 1 ? history.back() : location.assign('/')">← 返回</a></p>
+{% if d.amane_error %}<div class="alert"><span>Amane：{{ d.amane_error }}</span></div>{% endif %}
+
+<div class="card work-hero">
+  <a class="wcover{{ ' wide' if d.release and d.release.cover }}" {% if img %}href="{{ img }}" target="_blank" style="background-image:url('{{ img }}')"{% endif %}>{% if not img %}<span>{{ d.number }}</span>{% endif %}</a>
+  <div class="winfo">
+    <div class="wtop">
+      <h1 class="num">{{ d.number }}</h1>
+      {% if d.wanted %}<a href="/wanted/{{ d.wanted.id }}"><span class="badge s-{{ d.wanted.status.value }}">{{ STATUS_LABELS[d.wanted.status] }}{% if d.wanted.status.value == 'downloading' %} {{ d.wanted.percent|round|int }}%{% endif %}</span></a>{% endif %}
+      {% if d.owned %}<span class="src owned" title="{% for f in d.owned %}{{ f.root }}/{{ f.name }}&#10;{% endfor %}">115 已有</span>{% endif %}
+      {% if a %}<span class="src amane">{{ 'Amane 已入库' if a.files else 'Amane 里有' }}</span>{% endif %}
+      {% if d.dismissed %}<span class="tag">已忽略</span>{% endif %}
+    </div>
+    <div class="wt">{{ d.title }}</div>
+
+    <dl class="wmeta">
+      {% set rel = (a.release if a and a.release else (d.release.date if d.release else None)) %}
+      {% if rel %}<div><dt>发行</dt><dd>{{ rel }}{% if rel > today() %} <span class="pill soon">待发行</span>{% endif %}</dd></div>{% endif %}
+      {% if a and a.runtime %}<div><dt>时长</dt><dd>{{ a.runtime }} 分钟</dd></div>{% endif %}
+      {% if a and a.score %}<div><dt>评分</dt><dd>{{ a.score }}</dd></div>{% endif %}
+      {% if a and (a.studio or a.publisher) %}<div><dt>片商</dt><dd>{{ a.studio }}{% if a.publisher and a.publisher != a.studio %} / {{ a.publisher }}{% endif %}</dd></div>
+      {% elif d.work and d.work.studio %}<div><dt>片商</dt><dd>{{ d.work.studio }}</dd></div>{% endif %}
+      {% if a and a.series %}<div><dt>系列</dt><dd>{{ a.series }}</dd></div>{% endif %}
+      {% if a and a.directors %}<div><dt>导演</dt><dd>{{ a.directors|join('、') }}</dd></div>{% endif %}
+    </dl>
+
+    {% if d.actors %}
+    <div class="wactors">
+      {% for p in d.actors %}
+      {% set av = p.avatar|img if p.avatar else (p.amane_avatar|amane_img) %}
+      <a class="actor" href="{{ '/actresses/' ~ p.sub_id if p.sub_id else ((amane_url ~ '/actors/' ~ p.amane_id) if amane_url and p.amane_id else '#') }}"
+         {% if not p.sub_id and amane_url and p.amane_id %}target="_blank" rel="noreferrer"{% endif %} title="{{ '已订阅, 看女优页' if p.sub_id else '在 Amane 中查看' if p.amane_id else '' }}">
+        <span class="av" {% if av %}style="background-image:url('{{ av }}')"{% endif %}>{% if not av %}{{ p.name[:1] }}{% endif %}</span>
+        <span>{{ p.name }}{% if p.sub_id %} <i class="ok" style="font-style:normal">●</i>{% endif %}</span>
+      </a>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if a and a.tags %}<div class="wtags">{% for t in a.tags %}<span class="tag">{{ t }}</span>{% endfor %}</div>{% endif %}
+    {% if a and a.plot %}<p class="wplot">{{ a.plot }}</p>{% endif %}
+
+    <form method="post" action="/works/queue" class="bar wact">
+      <input type="hidden" name="only" value="{{ d.number }}">
+      {% if not d.wanted and not d.owned %}
+        <button class="primary">加入下载队列</button>
+        {% if d.dismissed %}<button formaction="/works/undismiss">取消忽略</button>{% else %}<button class="ghost" formaction="/works/dismiss">忽略</button>{% endif %}
+      {% elif d.wanted %}<a class="btn" href="/wanted/{{ d.wanted.id }}">磁力选择 / 下载进度</a>{% endif %}
+      <span class="spacer"></span>
+      {% if d.release %}<a class="btn sm ghost" href="{{ d.release.url }}" target="_blank" rel="noreferrer">{{ SOURCE_LABELS.get(d.release.source, d.release.source) }} 原页 ↗</a>{% endif %}
+      {% if a and amane_url %}<a class="btn sm ghost" href="{{ amane_url }}/meta/{{ a.id }}" target="_blank" rel="noreferrer">在 Amane 中打开 ↗</a>{% endif %}
+      {% if a and a.trailer %}<a class="btn sm ghost" href="{{ a.trailer }}" target="_blank" rel="noreferrer">预告片 ↗</a>{% endif %}
+    </form>
+    {% if d.subs %}<div class="small muted">片源订阅：{% for s in d.subs %}<a href="/?origin=subs&sub={{ s.id }}">{{ s.name }}</a>{% if not loop.last %}、{% endif %}{% endfor %}</div>{% endif %}
+  </div>
+</div>
+
+<div class="card flush">
+  <div class="card-head"><h2>磁力池</h2><span class="muted small">{{ d.magnets|length }} 条 · 按 档次 › 订阅顺序 › 日期 › 分数 排列，加入下载队列时自动选第一条（各站搜到的也会一起比较）</span></div>
+  <div class="scroll" style="margin-top:12px"><table>
+    <tr><th>#</th><th>档次</th><th>标题</th><th>来源</th><th>日期</th><th class="r">大小</th><th class="r">做种</th><th></th></tr>
+    {% for c, r in d.magnets %}
+    {% set t = tier(c) %}
+    <tr{% if c.rejected %} class="disabled"{% endif %}>
+      <td class="faint small">{{ loop.index }}</td>
+      <td class="nowrap">{% if t == 3 %}<span class="tag hl">破解+中字</span>{% elif t == 2 %}<span class="tag hl">中字</span>{% elif t == 1 %}<span class="tag hl">破解</span>{% else %}<span class="faint small">-</span>{% endif %}</td>
+      <td class="break small">{{ c.title }}
+        <div>{% for tg in FILTER_TAGS if tg in c.tags and tg not in ('subtitle', 'leak') %}<span class="tag">{{ TAG_LABELS[tg] }}</span>{% endfor %}</div>
+        {% if c.rejected %}<span class="bad">✗ {{ c.rejected }}</span>{% endif %}</td>
+      <td class="small nowrap">{{ c.origin or SOURCE_KINDS.get(c.site, c.site) }}
+        {% if r and r.source == 'sehuatang' %}<a href="{{ forum.thread_url(r.tid) }}" target="_blank" rel="noreferrer" title="98堂原帖">↗</a>
+        {% elif r and r.source == 'sukebei' %}<a href="https://sukebei.nyaa.si/view/{{ r.tid }}" target="_blank" rel="noreferrer" title="sukebei 原页">↗</a>{% endif %}</td>
+      <td class="muted small nowrap">{{ c.published|day }}</td>
+      <td class="r nowrap">{{ c.size|size }}</td>
+      <td class="r">{{ c.seeders if c.seeders is not none else '-' }}</td>
+      <td class="r">{% if r and not r.wanted_id and not d.owned %}<form method="post" action="/resources/{{ r.id }}/download"><button class="sm" title="直接用这条磁力">用这条下载</button></form>{% endif %}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="8"><div class="empty">磁力池里还没有这部作品的磁力；加入下载队列后会按番号去各站搜。</div></td></tr>
+    {% endfor %}
+  </table></div>
+</div>
+
+{% if d.images %}
+<div class="card">
+  <h2>剧照 <span class="muted small" style="font-weight:400">{{ '来自 Amane' if a and a.fanart else '来自 98堂帖子' }}</span></h2>
+  <div class="gallery">{% for show, orig in d.images %}<a href="{{ show }}" target="_blank" style="background-image:url('{{ show }}')" title="{{ orig }}"></a>{% endfor %}</div>
+</div>
+{% endif %}
+
+{% if d.others %}
+<div class="card">
+  <h2>其它帖子 <span class="muted small" style="font-weight:400">没有磁力</span></h2>
+  {% for r in d.others %}<div class="small">{{ r.title }} <span class="faint">{{ SOURCE_KINDS.get(r.source, r.source) }} · {{ r.posted|day }}</span>{% if r.source == 'sehuatang' %} <a href="{{ forum.thread_url(r.tid) }}" target="_blank" rel="noreferrer">↗</a>{% endif %}</div>{% endfor %}
+</div>
+{% endif %}
+{% endblock %}

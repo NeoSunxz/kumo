@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
@@ -18,6 +19,29 @@ _PROFILE_FIELDS = (
     ("birthday", "生日"), ("height", "身高"), ("cup", "罩杯"), ("bust", "胸围"), ("waist", "腰围"), ("hip", "臀围"),
     ("birthplace", "出生地"),
 )
+
+
+@dataclass
+class AmaneDetail:
+    id: int
+    title: str
+    plot: str
+    series: str
+    studio: str
+    publisher: str
+    directors: list[str]
+    tags: list[str]
+    actors: list[str]
+    release: str | None
+    runtime: int | None
+    score: float | None
+    poster: str | None
+    thumb: str | None
+    fanart: list[str]
+    trailer: str | None
+    actor_ids: dict[str, int] = field(default_factory=dict)
+    files: int = 0
+    """Amane 媒体库里关联的文件数."""
 
 
 def amane_number(number: str) -> str:
@@ -81,6 +105,23 @@ class Amane:
                 file_count=int(item.get("file_count") or 0),
             )
         return Work(number=number, found=False)
+
+    async def detail(self, amane_id: int) -> AmaneDetail:
+        """作品详情 (简介、剧照、预告片、标签等), 作品页用; 不入库, 由调用方短时缓存."""
+        data = await self._get(f"/api/metadata/{amane_id}", {})
+        m = data.get("metadata") or {}
+        fanart: list[str] = []
+        for urls in (m.get("extrafanart_urls") or {}).values():
+            fanart += [u for u in urls if u not in fanart]
+        return AmaneDetail(
+            id=amane_id, title=m.get("title") or "", plot=m.get("plot") or "", series=m.get("series") or "",
+            studio=m.get("studio") or "", publisher=m.get("publisher") or "", directors=list(m.get("directors") or []),
+            tags=list(m.get("tags") or []), actors=list(m.get("actors") or []), release=m.get("release"),
+            runtime=m.get("runtime"), score=m.get("score"),
+            poster=(m.get("poster_urls") or [None])[0], thumb=(m.get("thumb_urls") or [None])[0],
+            fanart=fanart[:24], trailer=(m.get("trailer_urls") or [None])[0],
+            actor_ids=dict(data.get("actor_ids") or {}), files=len(data.get("files") or []),
+        )
 
     async def actor(self, name: str) -> AmaneActor:
         # 资料站的名字可能带空格 (「春陽 モカ」), Amane 的搜索是字面匹配, 去掉空格再搜.

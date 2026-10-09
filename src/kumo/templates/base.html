@@ -318,12 +318,14 @@ label.tile.queued .pick { display: none; }
 .wcard:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); box-shadow: 0 4px 14px rgba(20,24,30,.1); }
 .wcard:has(.pick input:checked) { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
 .wcard.done { opacity: .55; }
-.wpic { position: relative; display: block; margin: 0; aspect-ratio: 16 / 10.7; background: var(--surface-2) center top / cover no-repeat; cursor: pointer; }
+.wpic { position: relative; display: block; margin: 0; aspect-ratio: 16 / 10.7; background: var(--surface-2) center top / cover no-repeat; }
 .wpic.wide { background-position: right center; }
 .wpic .ph { position: absolute; inset: 0; display: grid; place-items: center; color: var(--faint); font-family: var(--mono); font-size: 13px; }
-.wpic .pick { position: absolute; top: 6px; left: 6px; width: 20px; height: 20px; border-radius: 5px; display: grid; place-items: center;
-  background: rgba(255,255,255,.92); box-shadow: 0 1px 3px rgba(0,0,0,.3); }
-.wpic .pick input { width: 13px; height: 13px; }
+.wpicwrap { position: relative; }
+.wcard .pick { position: absolute; top: 6px; left: 6px; width: 22px; height: 22px; margin: 0; border-radius: 5px; display: grid; place-items: center;
+  background: rgba(255,255,255,.92); box-shadow: 0 1px 3px rgba(0,0,0,.3); cursor: pointer; }
+.wcard .pick input { width: 14px; height: 14px; }
+.wcard.done .pick { display: none; }
 .wpic .marks { position: absolute; left: 6px; bottom: 6px; display: flex; gap: 3px; flex-wrap: wrap; }
 .wpic .m { font-style: normal; font-size: 10.5px; font-weight: 600; line-height: 1.5; padding: 0 5px; border-radius: 4px; color: #fff; background: rgba(20,24,30,.72); }
 .wpic .m-subtitle { background: #2f7d4f; }
@@ -345,6 +347,33 @@ label.tile.queued .pick { display: none; }
 .wfoot .src { font-size: 10.5px; padding: 0 4px; }
 .wfoot button.sm { padding: 1px 7px; font-size: 11.5px; }
 @media (max-width: 860px) { .wgrid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; } }
+
+/* 作品页 */
+.work-hero { display: grid; grid-template-columns: minmax(0, 420px) minmax(0, 1fr); gap: 20px; align-items: start; }
+.wcover { display: grid; place-items: center; aspect-ratio: 16 / 10.7; border-radius: var(--radius-sm); background: var(--surface-2) center top / cover no-repeat;
+  border: 1px solid var(--line); color: var(--faint); font-family: var(--mono); }
+.wcover.wide { background-position: right center; }
+.winfo { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.wtop { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.wtop h1 { margin: 0; font-size: 24px; }
+.winfo .wt { font-size: 15px; font-weight: 600; line-height: 1.5; }
+.wmeta { display: flex; flex-wrap: wrap; gap: 4px 22px; margin: 0; }
+.wmeta div { display: flex; gap: 6px; font-size: 13px; }
+.wmeta dt { color: var(--faint); }
+.wmeta dd { margin: 0; }
+.wactors { display: flex; gap: 8px; flex-wrap: wrap; }
+.wactors .actor { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px 3px 3px; border: 1px solid var(--line); border-radius: 999px;
+  color: var(--fg); font-size: 13px; background: var(--surface-2); }
+.wactors .actor:hover { border-color: var(--accent); text-decoration: none; }
+.wactors .av { width: 26px; height: 26px; border-radius: 50%; background: var(--line) center top / cover; display: grid; place-items: center; font-size: 12px; color: var(--muted); }
+.wtags { display: flex; gap: 4px; flex-wrap: wrap; }
+.wtags .tag { margin: 0; }
+.wplot { margin: 0; font-size: 13px; line-height: 1.75; color: var(--muted); }
+.wact { padding-top: 4px; }
+.gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.gallery a { aspect-ratio: 3 / 2; border-radius: 6px; background: var(--surface-2) center / cover no-repeat; border: 1px solid var(--line); }
+.gallery a:hover { border-color: var(--accent); }
+@media (max-width: 860px) { .work-hero { grid-template-columns: 1fr; } }
 
 /* 磁力订阅: 小卡片网格 */
 .src-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; margin-bottom: 16px; }

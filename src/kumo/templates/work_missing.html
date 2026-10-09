@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}{{ number }} - kumo{% endblock %}
+{% block content %}
+<p class="lead muted" style="margin:0 0 10px"><a href="javascript:history.length > 1 ? history.back() : location.assign('/')">← 返回</a></p>
+{% if amane_error %}<div class="alert"><span>Amane：{{ amane_error }}</span></div>{% endif %}
+<div class="card" style="max-width:640px">
+  <h1 class="num" style="margin:0 0 8px;font-size:22px">{{ number }}</h1>
+  <p class="muted" style="margin:0 0 14px">作品库、磁力池{{ '、Amane' if has_amane }}里都没有这个番号的记录。{% if not has_amane %}（<a href="/settings#amane">接入 Amane</a> 后会去 Amane 里查）{% endif %}</p>
+  <form method="post" action="/works/queue" class="bar">
+    <input type="hidden" name="only" value="{{ number }}">
+    <button class="primary">加入下载队列</button>
+    <span class="muted small">按番号去各站搜磁力</span>
+  </form>
+</div>
+{% endblock %}

@@ -551,6 +551,20 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
             src=src, tags=tags, q=q, days=days, todo=todo, message=message, rss_url=rss_url, more=more, more_url=more_url,
         )
 
+    @app.get("/works/{number}", response_class=HTMLResponse)
+    async def work_page(request: Request, number: str) -> HTMLResponse:
+        s = svc(request)
+        d = await s.work_detail(number)
+        if not (d.release or d.magnets or d.others or d.work or d.wanted):
+            resp = page(request, "work_missing.html", number=number, amane_error=d.amane_error, has_amane=bool(s.settings.amane_url))
+            resp.status_code = 404
+            return resp
+        sukebei = {r.tid for _, r in d.magnets if r and r.source == "sukebei"} | {r.tid for r in d.others if r.source == "sukebei"}
+        return page(
+            request, "work.html", d=d, tier=lambda c: tier(c, s.settings), forum=Sehuatang(s.settings.crawl_base_url),
+            sukebei=sukebei,
+        )
+
     @app.post("/works/{action}")
     async def works_action(request: Request, action: str) -> RedirectResponse:
         """挑选: ``queue`` 加入下载队列 (之后磁力选择), ``dismiss`` 忽略, ``undismiss`` 取消忽略."""
