@@ -4,7 +4,7 @@
 <p class="lead muted" style="margin:0 0 10px"><a href="/actresses">← 女优</a></p>
 {% if message %}<div class="alert"><span>{{ message }}</span></div>{% endif %}
 <div class="card profile">
-  {% set av = g.avatar|img if g.avatar else (g.amane_avatar|amane_img) %}
+  {% set av = g.photo %}
   <div class="avatar" {% if av %}style="background-image:url('{{ av }}')"{% endif %}>{% if not av %}{{ g.name[:1] }}{% endif %}</div>
   <div style="flex:1;min-width:240px">
     <h1 style="font-size:22px;margin:0;display:flex;gap:10px;align-items:center;flex-wrap:wrap">{{ g.name }}

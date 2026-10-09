@@ -128,7 +128,7 @@ async def test_run_amane_caches_works_and_actors(service: Service, amane: FakeAm
 
     group = service.actress_group(sub.id)
     assert group and group.amane and group.amane.found
-    assert group.amane_avatar == "/api/resources/a1"  # 资料站没有头像时用 Amane 的
+    assert group.photo == "/img/amane?u=%2Fapi%2Fresources%2Fa1"
     assert group.full_profile["身高"] == "158cm"
 
     amane.calls.clear()
@@ -157,7 +157,7 @@ async def test_run_amane_error_is_reported(service: Service, monkeypatch: pytest
     assert "token" in service.last_error["amane"]
 
 
-def test_actress_profile_prefers_site_avatar(service: Service) -> None:
+def test_actress_photo_prefers_amane(service: Service) -> None:
     sub = service.repo.add_subscription(
         Subscription(source="javbus", kind="star", ident="1", uncensored=False, name="演员甲", avatar="https://www.javbus.com/a.jpg",
                      profile={"身高": "160cm"})
@@ -165,7 +165,11 @@ def test_actress_profile_prefers_site_avatar(service: Service) -> None:
     assert sub.id
     service.repo.save_amane_actor(AmaneActor(name="演员甲", found=True, image="/api/resources/a1", profile={"身高": "158cm", "罩杯": "E"}))
     g = service.actress_group(sub.id)
-    assert g and g.amane_avatar is None and g.full_profile == {"身高": "160cm", "罩杯": "E"}
+    # 头像 Amane 的优先 (资料站的只有 100~125 像素); 资料以资料站为准, Amane 补缺
+    assert g and g.photo == "/img/amane?u=%2Fapi%2Fresources%2Fa1" and g.full_profile == {"身高": "160cm", "罩杯": "E"}
+    service.repo.save_amane_actor(AmaneActor(name="演员甲", found=False))
+    g = service.actress_group(sub.id)
+    assert g and g.photo == "/img?u=https%3A%2F%2Fwww.javbus.com%2Fa.jpg"
 
 
 def test_pages_use_amane_content(service: Service, amane: FakeAmane, tmp_path: Path) -> None:

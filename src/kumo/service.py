@@ -235,7 +235,8 @@ class Service:
             cached = self.repo.amane_actor(name)
             actors.append(ActorRef(
                 name=name, sub_id=sub.id if sub else None,
-                avatar=sub.avatar if sub and sub.avatar else None,
+                # Amane 的头像清晰得多, 有就不用资料站的小图.
+                avatar=sub.avatar if sub and sub.avatar and not (cached and cached.found and cached.image) else None,
                 amane_avatar=cached.image if cached and cached.found else None,
                 amane_id=(detail.actor_ids.get(name) if detail else None) or (cached.amane_id if cached and cached.found else None),
             ))
@@ -909,14 +910,15 @@ class ActressGroup:
     queued: int = 0
     """已加入下载队列的作品数."""
     amane: AmaneActor | None = None
-    """Amane 里的同名演员; 资料站没有头像或资料时用它补."""
+    """Amane 里的同名演员; 头像优先用它的, 资料用来补缺."""
 
     @property
-    def amane_avatar(self) -> str | None:
-        """资料站没有头像时用 Amane 的."""
-        if self.avatar or self.amane is None or not self.amane.found:
-            return None
-        return self.amane.image
+    def photo(self) -> str:
+        """头像地址 (已转成 kumo 的图片代理): Amane 的优先 (多来自 gfriends, 640×896),
+        资料站的头像只有 100~125 像素, 放大显示会糊, 只在 Amane 没有时用."""
+        if self.amane and self.amane.found and self.amane.image:
+            return f"/img/amane?u={quote(self.amane.image, safe='')}"
+        return f"/img?u={quote(self.avatar, safe='')}" if self.avatar else ""
 
     @property
     def full_profile(self) -> dict[str, str]:
