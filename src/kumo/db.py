@@ -169,7 +169,8 @@ CREATE TABLE IF NOT EXISTS amane_work (
     thumb       TEXT,
     amane_id    INTEGER,
     file_count  INTEGER NOT NULL DEFAULT 0,
-    checked_at  REAL NOT NULL
+    checked_at  REAL NOT NULL,
+    scrape_requested_at REAL
 );
 CREATE TABLE IF NOT EXISTS amane_actor (
     name        TEXT PRIMARY KEY COLLATE NOCASE,
@@ -204,15 +205,28 @@ class Repo:
         self._backfill()
 
     def _backfill(self) -> None:
-        """旧数据补齐: 资源的标签与片头标记 (按标题重新识别), 旧的「忽略」并入忽略列表."""
-        from .select import brackets, title_tags
+        """旧数据补齐: 资源的标签与片头标记 (识别规则改了就全部按标题重新识别), 旧的「忽略」并入忽略列表."""
+        from .select import TAG_RULES_VERSION, brackets, title_tags
 
-        rows = self._conn.execute("SELECT id, title, number FROM resource WHERE tags IS NULL").fetchall()
-        for r in rows:
+        row = self._conn.execute("SELECT value FROM kv WHERE key = 'tag_rules'").fetchone()
+        retag_all = (row["value"] if row else "") != TAG_RULES_VERSION
+        extra = {
+            r["id"]: set(json.loads(r["params"] or "{}").get("extra_tags") or [])
+            for r in self._conn.execute("SELECT id, params FROM magnet_source")
+        }
+        sql = "SELECT id, title, number, subtitle, source_id FROM resource" + ("" if retag_all else " WHERE tags IS NULL")
+        for r in self._conn.execute(sql).fetchall():
+            tags = title_tags(r["title"], r["number"]) | extra.get(r["source_id"], set())
+            if r["subtitle"]:
+                tags.add("subtitle")  # 字幕板块的帖子
             self._conn.execute(
                 "UPDATE resource SET tags = ?, brackets = ? WHERE id = ?",
-                (json.dumps(sorted(title_tags(r["title"], r["number"]))), json.dumps(brackets(r["title"]), ensure_ascii=False), r["id"]),
+                (json.dumps(sorted(tags)), json.dumps(brackets(r["title"]), ensure_ascii=False), r["id"]),
             )
+        self._conn.execute(
+            "INSERT INTO kv(key, value) VALUES('tag_rules', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (TAG_RULES_VERSION,),
+        )
         self._conn.execute(
             "INSERT OR IGNORE INTO dismissed(number, at) SELECT number, crawled_at FROM resource"
             " WHERE dismissed = 1 AND number IS NOT NULL"
@@ -233,6 +247,9 @@ class Repo:
             self._conn.execute("ALTER TABLE resource ADD COLUMN source_id INTEGER")
         if cols and "images" not in cols:
             self._conn.execute("ALTER TABLE resource ADD COLUMN images TEXT")
+        cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(amane_work)")}
+        if cols and "scrape_requested_at" not in cols:
+            self._conn.execute("ALTER TABLE amane_work ADD COLUMN scrape_requested_at REAL")
         cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(candidate)")}
         if cols and "rank" not in cols:
             self._conn.execute("ALTER TABLE candidate ADD COLUMN rank INTEGER")
@@ -697,12 +714,41 @@ class Repo:
                 " checked_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(number) DO UPDATE SET found=excluded.found,"
                 " title=excluded.title, date=excluded.date, actors=excluded.actors, studio=excluded.studio,"
                 " poster=excluded.poster, thumb=excluded.thumb, amane_id=excluded.amane_id,"
-                " file_count=excluded.file_count, checked_at=excluded.checked_at",
+                " file_count=excluded.file_count, checked_at=excluded.checked_at",  # scrape_requested_at 保留
                 (
                     w.number, int(w.found), w.title, w.date, json.dumps(w.actors, ensure_ascii=False), w.studio,
                     w.poster, w.thumb, w.amane_id, w.file_count, time.time(),
                 ),
             )
+
+    def scrape_status(self, number: str) -> tuple[bool, float | None]:
+        """(Amane 里有没有, 让 Amane 刮削的时间)."""
+        row = self._one("SELECT found, scrape_requested_at FROM amane_work WHERE number = ?", (number,))
+        return (bool(row["found"]), row["scrape_requested_at"]) if row else (False, None)
+
+    def mark_scrape_requested(self, number: str, checked_at: float) -> None:
+        """记下已让 Amane 刮削; ``checked_at`` 写成「快到重查时间」的值, 刮削完成后很快就会被重新查询."""
+        with self._tx() as c:
+            c.execute(
+                "INSERT INTO amane_work(number, found, checked_at, scrape_requested_at) VALUES(?, 0, ?, ?)"
+                " ON CONFLICT(number) DO UPDATE SET scrape_requested_at = excluded.scrape_requested_at, checked_at = excluded.checked_at",
+                (number, checked_at, time.time()),
+            )
+
+    def numbers_to_scrape(self, retry_before: float, limit: int) -> list[str]:
+        """查过、Amane 里没有、还没提交过刮削 (或上次提交早于 ``retry_before``) 的番号:
+        下载队列里的优先, 其次待挑选的 (磁力池、作品库, 新的在前); 已在 115 或已忽略的不提交."""
+        rows = self._all(
+            "SELECT n.number FROM ("
+            " SELECT number, 0 AS prio, updated_at AS ord FROM wanted WHERE status NOT IN ('owned', 'ignored')"
+            f" UNION ALL SELECT number, 1, crawled_at FROM resource WHERE {self._PENDING}"
+            f" UNION ALL SELECT number, 2, COALESCE(date, '') FROM release WHERE {self._UNHANDLED}"
+            ") AS n JOIN amane_work a ON a.number = n.number"
+            " WHERE a.found = 0 AND (a.scrape_requested_at IS NULL OR a.scrape_requested_at < ?)"
+            " GROUP BY n.number COLLATE NOCASE ORDER BY MIN(n.prio), MAX(n.ord) DESC LIMIT ?",
+            (retry_before, limit),
+        )
+        return [r["number"] for r in rows]
 
     def numbers_for_amane(self, refresh_before: float, limit: int) -> list[str]:
         """需要去 Amane 查的番号: 从没查过或上次查询早于 ``refresh_before`` 的.

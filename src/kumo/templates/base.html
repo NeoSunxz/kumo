@@ -312,13 +312,14 @@ label.tile.queued .pick { display: none; }
 .filterbar select { width: auto; max-width: 220px; padding: 5px 8px; font-size: 13px; }
 .filterbar input[type=search] { padding: 5px 10px; font-size: 13px; }
 .filterbar .tabs a { padding: 4px 10px; }
-.wgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 12px; }
+.wgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
 .wcard { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; display: flex; flex-direction: column;
   box-shadow: var(--shadow); transition: border-color .15s, box-shadow .15s; min-width: 0; }
 .wcard:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); box-shadow: 0 4px 14px rgba(20,24,30,.1); }
 .wcard:has(.pick input:checked) { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
 .wcard.done { opacity: .55; }
-.wpic { position: relative; display: block; margin: 0; aspect-ratio: 16 / 10.7; background: var(--surface-2) center top / cover no-repeat; }
+.wpic { position: relative; display: block; margin: 0; aspect-ratio: 7 / 10; background: var(--surface-2) center top / cover no-repeat; }
+/* 横版封面放进竖框: 裁出右半边 (正面封面) */
 .wpic.wide { background-position: right center; }
 .wpic .ph { position: absolute; inset: 0; display: grid; place-items: center; color: var(--faint); font-family: var(--mono); font-size: 13px; }
 .wpicwrap { position: relative; }
@@ -346,7 +347,7 @@ label.tile.queued .pick { display: none; }
 .wfoot .wsrc { font-size: 11px; color: var(--faint); }
 .wfoot .src { font-size: 10.5px; padding: 0 4px; }
 .wfoot button.sm { padding: 1px 7px; font-size: 11.5px; }
-@media (max-width: 860px) { .wgrid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; } }
+@media (max-width: 860px) { .wgrid { grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 6px; } }
 
 /* 作品页 */
 .work-hero { display: grid; grid-template-columns: minmax(0, 420px) minmax(0, 1fr); gap: 20px; align-items: start; }

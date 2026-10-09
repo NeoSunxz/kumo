@@ -60,25 +60,11 @@ def test_settings_roundtrip_and_validation(service: Service, tmp_path: Path) -> 
         assert service.repo.settings().submit_batch == 3
 
 
-def test_rss_output(service: Service, tmp_path: Path) -> None:
-    service.add_numbers(["MNGS-005", "BF-042"])
-    w = service.repo.wanted_by_number("MNGS-005")
-    assert w
-    service.repo.update_wanted(w.id, status=WantedStatus.SUBMITTED, submitted_at=1.0)
-    with client_for(service, tmp_path) as c:
-        r = c.get("/rss.xml")
-        assert r.status_code == 200 and "application/rss+xml" in r.headers["content-type"]
-        assert "<title>MNGS-005</title>" in r.text
-        assert "BF-042" not in r.text  # 还没提交的不输出
-
-
-def test_password_protects_ui_but_rss_accepts_key(service: Service, tmp_path: Path) -> None:
+def test_password_protects_ui(service: Service, tmp_path: Path) -> None:
     with client_for(service, tmp_path, password="pw") as c:
         assert c.get("/").status_code == 401
         assert c.get("/health").status_code == 200
-        assert c.get("/rss.xml").status_code == 401
-        assert c.get("/rss.xml?key=wrong").status_code == 401
-        assert c.get("/rss.xml?key=pw").status_code == 200
+        assert c.get("/queue?key=pw").status_code == 401  # 不再有 RSS 的 key 例外
         good = base64.b64encode(b"any:pw").decode()
         bad = base64.b64encode(b"any:nope").decode()
         assert c.get("/", headers={"Authorization": f"Basic {good}"}).status_code == 200

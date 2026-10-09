@@ -24,6 +24,10 @@
   </div>
   {% if kind == 'sukebei' %}<div class="checks"><label class="check"><input type="checkbox" name="trusted_only" {% if p.trusted_only %}checked{% endif %}> 只要可信上传者</label></div>{% endif %}
 
+  <div class="chips" style="margin:6px 0 10px"><span class="k" title="标题里看不出来、但这个订阅的资源固定是这类时用; 入池判断与磁力选择都算">统一加标签</span>
+    {% for t in FILTER_TAGS %}<label><input type="checkbox" name="extra_tags" value="{{ t }}" {% if src and t in src.extra_tags %}checked{% endif %}><span>{{ TAG_LABELS[t] }}</span></label>{% endfor %}
+    <span class="faint small">（如 sukebei 的 FHDC [UN] 都是中字破解）</span>
+  </div>
   <div class="muted small" style="margin:6px 0 8px">入池条件（只看标题；都不选表示全部入池。98堂在打开帖子之前就按标题判断，不符合的不再请求）</div>
   <div class="chips" style="margin-bottom:8px"><span class="k">都要有</span>
     {% for t in FILTER_TAGS %}<label><input type="checkbox" name="tags_all" value="{{ t }}" {% if f and t in f.tags_all %}checked{% endif %}><span>{{ TAG_LABELS[t] }}</span></label>{% endfor %}
@@ -108,6 +112,7 @@
     </div>
     <div class="desc" title="{{ src.describe() }}">{{ src.describe() }}</div>
     <div class="conds">
+      {% if src.extra_tags %}<span class="tag" style="color:var(--accent)">{{ src.describe_extra() }}</span>{% endif %}
       {% if src.auto_download %}<span class="tag" style="color:var(--ok)">自动</span>{% endif %}
       {% for x in src.filter.summary() %}<span class="tag hl">{{ x }}</span>{% else %}<span class="faint small">全部入池</span>{% endfor %}
     </div>

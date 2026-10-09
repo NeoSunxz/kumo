@@ -33,7 +33,7 @@
 
 <div class="card flush">
   <div class="scroll"><table>
-    <tr><th>名称</th><th>站点</th><th>类型</th><th class="r">作品</th><th>上次检查</th><th>自动搜磁力</th><th>RSS</th><th></th></tr>
+    <tr><th>名称</th><th>站点</th><th>类型</th><th class="r">作品</th><th>上次检查</th><th>自动搜磁力</th><th></th></tr>
     {% for sub in subs %}
     <tr{% if not sub.enabled %} class="disabled"{% endif %}>
       <td style="min-width:150px"><a href="{{ ('/actresses/' ~ sub.id) if sub.kind == 'star' else ('/works?origin=subs&sub=' ~ sub.id) }}"><b>{{ sub.name }}</b></a>
@@ -47,7 +47,6 @@
       <td class="r">{{ sub.release_count }}</td>
       <td class="muted small nowrap">{{ sub.checked_at|ts }}</td>
       <td><form method="post" action="/subscriptions/{{ sub.id }}/auto"><button class="sm toggle{{ ' on' if sub.auto_search }}">{{ '开' if sub.auto_search else '关' }}</button></form></td>
-      <td style="min-width:200px"><div class="copy sm"><code>{{ base }}rss/releases.xml?sub={{ sub.id }}</code><button type="button" data-copy>复制</button></div></td>
       <td class="r nowrap">
         <div class="btn-row">
         <form class="inline" method="post" action="/subscriptions/{{ sub.id }}/check"><button class="sm">检查</button></form>
@@ -57,7 +56,7 @@
       </td>
     </tr>
     {% else %}
-    <tr><td colspan="8"><div class="empty">还没有订阅，在上面粘贴资料站页面地址</div></td></tr>
+    <tr><td colspan="7"><div class="empty">还没有订阅，在上面粘贴资料站页面地址</div></td></tr>
     {% endfor %}
   </table></div>
 </div>

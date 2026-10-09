@@ -271,31 +271,12 @@ def seed(service: Service) -> tuple[Subscription, Subscription]:
     return a, b
 
 
-def test_release_rss(service: Service, tmp_path: Path) -> None:
-    a, b = seed(service)
-    with TestClient(create_app(Env(data_dir=tmp_path, password=""), service=service)) as c:
-
-        def items(query: str) -> list[ET.Element]:
-            r = c.get(f"/rss/releases.xml{query}")
-            assert r.status_code == 200 and "application/rss+xml" in r.headers["content-type"]
-            return list(ET.fromstring(r.text).iter("item"))
-
-        all_items = items("")
-        assert [i.findtext("guid") for i in all_items] == ["javbus-MDVR-444", "javbus-MNGS-070"]  # 按发行日期, 同一作品只出一次
-        assert all_items[1].findtext("title") == "MNGS-070 タイトル <&>"
-        assert set((all_items[1].findtext("description") or "").split(",")) == {"春陽モカ", "ムーディーズ"}
-        assert [i.findtext("guid") for i in items(f"?sub={a.id}")] == ["javbus-MNGS-070"]
-        assert [i.findtext("guid") for i in items("?kind=studio&q=MDVR")] == ["javbus-MDVR-444"]
-        assert len(items("?limit=1")) == 1
-        assert c.get("/rss/releases.xml?sub=x").status_code == 400
-
-
 def test_subscription_and_release_pages(service: Service, tmp_path: Path, lists: type[FakeLists]) -> None:
     a, _ = seed(service)
     lists.pages[("star", "77")] = [([listed("EEE-001", "2026-10-01")], False)]
     with TestClient(create_app(Env(data_dir=tmp_path, password=""), service=service)) as c:
         page = c.get("/subscriptions").text
-        assert "春陽モカ" in page and f"rss/releases.xml?sub={a.id}" in page
+        assert "春陽モカ" in page
         assert "添加失败" in c.post("/subscriptions", data={"url": "https://example.com/x"}).text
         assert c.post("/subscriptions", data={"url": "https://www.javbus.com/star/77"}, follow_redirects=False).status_code == 303
         assert any(s.ident == "77" for s in service.repo.subscriptions())
@@ -309,7 +290,6 @@ def test_subscription_and_release_pages(service: Service, tmp_path: Path, lists:
 
         releases = c.get(f"/releases?sub={a.id}").text
         assert "MNGS-070" in releases and "MDVR-444" not in releases
-        assert f"rss/releases.xml?sub={a.id}" in releases
         assert c.get("/releases?kind=studio&days=30&todo=1&q=M").status_code == 200
 
         rel_ids = [r.id for r, *_ in service.repo.releases()]

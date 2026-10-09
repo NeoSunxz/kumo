@@ -112,6 +112,10 @@ class Settings(BaseModel):
     amane_interval_minutes: float = Field(default=30.0, ge=5)
     amane_refresh_days: float = Field(default=7.0, ge=1)
     """已查过的番号多久后再查一次 (Amane 里可能刚刮削完)."""
+    amane_auto_scrape: bool = True
+    """Amane 里没有的作品自动让 Amane 刮削: 下载队列里的优先, 其次是待挑选的."""
+    amane_scrape_per_run: int = Field(default=30, ge=0, le=500)
+    """每轮同步最多提交多少个刮削任务 (订阅回填时作品很多, 免得一次塞满 Amane 的队列)."""
 
     # 订阅 (按女优 / 系列 / 片商等获取新作)
     subs_interval_hours: float = Field(default=12.0, ge=1)
@@ -120,11 +124,9 @@ class Settings(BaseModel):
     subs_initial_pages: int = Field(default=3, ge=1, le=30)
     """新订阅第一次检查时回填的页数 (每页 30 部)."""
 
-    # 输入 / 输出 RSS
+    # RSS 磁力订阅的读取间隔
     input_feeds: list[InputFeed] = Field(default_factory=list)
     feed_interval_minutes: float = Field(default=30.0, ge=5)
-    rss_statuses: list[str] = Field(default_factory=lambda: ["submitted", "downloading", "done"])
-    """出现在输出 RSS 里的状态."""
 
 
 class Env(BaseModel):

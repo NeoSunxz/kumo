@@ -422,7 +422,7 @@ def test_empty_filter_values_mean_all(service: Service, tmp_path: Path) -> None:
     release(service, "ABC-110", "2026-10-01")
     with TestClient(create_app(Env(data_dir=tmp_path, password=""), service=service)) as c:
         for url in ("/works?origin=&sub=&src=&days=&todo=1&q=", "/resources?forum=&typeid=&src=&q=",
-                    "/rss/releases.xml?days=&sub=", "/works?days=7"):
+                    "/works?days=7"):
             r = c.get(url)
             assert r.status_code == 200, url
         assert "ABC-110" in c.get("/works?days=").text
@@ -455,3 +455,44 @@ def test_works_page_shows_more(service: Service, tmp_path: Path) -> None:
         assert page.count('name="ids"') == 120 and "显示更多" in page and "n=240" in page
         page = c.get("/?origin=magnet&n=240").text
         assert page.count('name="ids"') == 130 and "显示更多</a>" not in page
+
+
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("[FHDC][UN]WAAA-686 店内でこっそり", {"subtitle", "hd", "leak"}),
+        ("+++ [FHDC] MNGS-005 春陽モカ", {"subtitle", "hd"}),
+        ("[UN]HEYZO-3381 x", {"uncensored"}),  # 无码厂牌的 [UN] 仍是无码原版
+        ("ABC-001 UNcensored Leak", {"leak"}),
+        ("SUNNY-001 [UNKNOWN]", set()),
+    ],
+)
+def test_release_group_marks(title: str, expected: set[str]) -> None:
+    from kumo.select import title_tags
+
+    assert title_tags(title) == expected
+
+
+async def test_source_extra_tags_count_for_filter_and_choice(service: Service, sukebei: dict[str, str]) -> None:
+    src = source(service, query="fhdc", extra_tags=["subtitle", "leak"], filter=SourceFilter(tags_all=["subtitle", "leak"]))
+    sukebei[Sukebei.rss_url(query="fhdc", category="2_2")] = rss((401, "ABC-401 標題", 9, "5.0 GiB", True))
+    assert [r.reason for r in await service.preview_source(src)] == [""]
+    await service.run_sukebei()
+    (r,) = service.repo.resources()
+    assert {"subtitle", "leak"} <= r.tags
+    service.repo.save_settings(Settings(app_id="test", download_path="/云下载", sites=["sehuatang"]))
+    service.add_numbers(["ABC-401"])
+    w = service.repo.wanted_by_number("ABC-401")
+    assert w
+    await service.search(w)
+    (cand,) = service.repo.candidates(w.id)
+    assert {"subtitle", "leak"} <= cand.tags  # 磁力选择也按订阅加的标签算档次
+
+
+def test_existing_resources_retagged_when_rules_change(tmp_path: Path) -> None:
+    repo = Repo(tmp_path / "k.db")
+    repo.add_resource(Resource(source="sukebei", tid=1, forum_id=0, forum_name="", type_name="", title="[FHDC][UN]WAAA-686 x",
+                               number="WAAA-686", tags={"hd"}))
+    repo.set_kv("tag_rules", "old")
+    (r,) = Repo(tmp_path / "k.db").resources()
+    assert r.tags == {"subtitle", "hd", "leak"}

@@ -1,29 +1,21 @@
-"""RSS 输入与输出.
+"""RSS 输入 (磁力订阅的 RSS 来源).
 
-输入: 订阅用户的 RSS/Atom. 条目里有磁力就直接用; 只有 .torrent 链接时下载种子算出 info hash
-转成磁力 (115 云下载收到 HTTP 链接只会把 .torrent 文件本身存下来); 都没有就从标题识别番号, 交给磁力刮削.
-
-输出: 已提交 / 已完成的番号, 供 Amane 的远程发现订阅. Amane 用 ``extract_number(title)`` 解析番号,
-因此条目标题只写番号本身; ``guid`` 按番号固定, 同一番号不会被 Amane 重复入队.
+条目里有磁力就直接用; 只有 .torrent 链接时下载种子算出 info hash 转成磁力
+(115 云下载收到 HTTP 链接只会把 .torrent 文件本身存下来); 都没有就从标题识别番号.
 """
 
 from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Callable
-from datetime import datetime, timedelta, timezone
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from email.utils import formatdate
 from urllib.parse import quote
-from xml.sax.saxutils import escape
 
-from .models import Release, Resource, Wanted, format_size, info_hash_of
+from .models import info_hash_of
 from .numbers import extract_number
 
 _MAGNET = re.compile(r"magnet:\?xt=urn:btih:[0-9A-Za-z]{32,40}[^\s\"'<>]*")
-_CST = timezone(timedelta(hours=8))
 _ATOM = "{http://www.w3.org/2005/Atom}"
 
 
@@ -118,101 +110,6 @@ def torrent_to_magnet(data: bytes, name: str = "") -> str:
 
 
 # --- 输出 ---
-
-
-def render_rss(items: list[tuple[Wanted, str]], *, link: str) -> str:
-    """``items`` 为 (番号记录, 所选磁力的标题)."""
-    parts = [
-        '<?xml version="1.0" encoding="UTF-8"?>',
-        '<rss version="2.0"><channel>',
-        "<title>kumo</title>",
-        f"<link>{escape(link)}</link>",
-        "<description>kumo 已提交 115 云下载的番号</description>",
-    ]
-    for wanted, title in items:
-        when = wanted.submitted_at or wanted.updated_at
-        parts.append(
-            "<item>"
-            f"<title>{escape(wanted.number)}</title>"
-            f'<guid isPermaLink="false">kumo-{escape(wanted.number)}</guid>'
-            f"<pubDate>{formatdate(when, usegmt=True)}</pubDate>"
-            f"<description>{escape(title)}</description>"
-            "</item>"
-        )
-    parts.append("</channel></rss>")
-    return "\n".join(parts)
-
-
-def render_resource_rss(items: list[Resource], *, title: str, link: str, thread_url: Callable[[int], str]) -> str:
-    """论坛资源的 RSS.
-
-    标题写「番号 原标题」: Amane 从标题解析番号, 原标题留给人看. ``guid`` 用帖子编号, 同一帖子
-    不会被重复入队; 磁力放在 enclosure 里, 供需要直接下载的订阅端使用.
-    """
-    parts = [
-        '<?xml version="1.0" encoding="UTF-8"?>',
-        '<rss version="2.0"><channel>',
-        f"<title>{escape(title)}</title>",
-        f"<link>{escape(link)}</link>",
-        f"<description>{escape(title)}</description>",
-    ]
-    for r in items:
-        heading = f"{r.number} {r.title}" if r.number and not r.title.upper().startswith(r.number) else r.title
-        when = _posted_timestamp(r.posted) or r.crawled_at
-        desc = " · ".join(x for x in (r.forum_name, r.type_name, format_size(r.size) if r.size else "") if x)
-        enclosure = (
-            f'<enclosure url="{escape(r.magnet, {chr(34): "&quot;"})}" type="application/x-bittorrent" length="{r.size or 0}"/>'
-            if r.magnet
-            else ""
-        )
-        parts.append(
-            "<item>"
-            f"<title>{escape(heading)}</title>"
-            f"<link>{escape(thread_url(r.tid))}</link>"
-            f'<guid isPermaLink="false">{escape(r.source)}-{r.tid}</guid>'
-            f"<pubDate>{formatdate(when, usegmt=True)}</pubDate>"
-            f"<description>{escape(desc)}</description>"
-            f"{enclosure}"
-            "</item>"
-        )
-    parts.append("</channel></rss>")
-    return "\n".join(parts)
-
-
-def render_release_rss(items: list[tuple[Release, str]], *, title: str, link: str) -> str:
-    """订阅新作的 RSS: ``items`` 为 (作品, 所属订阅名). guid 按番号固定, 同一作品属于多个订阅也只算一条."""
-    parts = [
-        '<?xml version="1.0" encoding="UTF-8"?>',
-        '<rss version="2.0"><channel>',
-        f"<title>{escape(title)}</title>",
-        f"<link>{escape(link)}</link>",
-        f"<description>{escape(title)}</description>",
-    ]
-    for r, subs in items:
-        when = _posted_timestamp(r.date) or r.first_seen
-        parts.append(
-            "<item>"
-            f"<title>{escape(f'{r.number} {r.title}'.strip())}</title>"
-            f"<link>{escape(r.url)}</link>"
-            f'<guid isPermaLink="false">{escape(r.source)}-{escape(r.number)}</guid>'
-            f"<pubDate>{formatdate(when, usegmt=True)}</pubDate>"
-            f"<description>{escape(subs)}</description>"
-            "</item>"
-        )
-    parts.append("</channel></rss>")
-    return "\n".join(parts)
-
-
-def _posted_timestamp(posted: str | None) -> float | None:
-    """论坛时间是北京时间, 只有日期时按当天零点."""
-    if not posted:
-        return None
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
-        try:
-            return datetime.strptime(posted, fmt).replace(tzinfo=_CST).timestamp()
-        except ValueError:
-            continue
-    return None
 
 
 def magnet_hash(magnet: str) -> str | None:

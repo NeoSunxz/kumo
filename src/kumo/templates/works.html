@@ -61,12 +61,12 @@
   {% if items %}
   <div class="wgrid">
     {% for it in items %}
-    {% set img = cover(it.release, it.work, it.magnets) %}
+    {% set img, wide = poster(it.release, it.work, it.magnets) %}
     {% set handled = it.wanted or it.owned %}
     {% set upcoming = it.release and it.release.date and it.release.date > today() %}
     <div class="wcard{% if handled or it.dismissed %} done{% endif %}">
       <div class="wpicwrap">
-      <a class="wpic{{ ' wide' if it.release and it.release.cover }}" href="/works/{{ it.number|urlencode }}" {% if img %}style="background-image:url('{{ img }}')"{% endif %}>
+      <a class="wpic{{ ' wide' if wide }}" href="/works/{{ it.number|urlencode }}" {% if img %}style="background-image:url('{{ img }}')"{% endif %}>
         {% if not img %}<span class="ph">{{ it.number }}</span>{% endif %}
         <span class="marks">
           {% if upcoming %}<i class="m soon">待发行</i>{% endif %}
@@ -105,8 +105,4 @@
   {% endif %}
 </form>
 
-{% if origin != 'magnet' %}
-<div class="rss-row" style="margin-top:14px"><span>片源作品 RSS（复制到 Amane「远程发现」刮削元数据）</span>
-  <div class="copy"><code class="break">{{ rss_url }}</code><button type="button" data-copy>复制</button></div></div>
-{% endif %}
 {% endblock %}

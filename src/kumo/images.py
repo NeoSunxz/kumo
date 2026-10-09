@@ -83,8 +83,11 @@ class ImageCache:
 
         return await self._load(url, fetch)
 
-    async def get_amane(self, url: str, amane: Amane) -> Path:
-        """Amane 作品 / 演员的图片; 缓存键带上 Amane 地址, 换了 Amane 不会串图."""
+    async def get_amane(self, url: str, amane: Amane, *, width: int | None = None) -> Path:
+        """Amane 作品 / 演员的图片; 缓存键带上 Amane 地址, 换了 Amane 不会串图.
+
+        ``width``: 缩成这个宽度 (列表里的小图). Amane 的海报原图约 1000×1500、上百 KB 到 1MB, 一页上百张会很慢.
+        """
         from .amane import AmaneError
 
         async def fetch() -> httpx.Response:
@@ -93,7 +96,34 @@ class ImageCache:
             except AmaneError as exc:
                 raise ImageError(str(exc)) from exc
 
-        return await self._load(f"amane:{amane.base_url}:{url}", fetch)
+        original = await self._load(f"amane:{amane.base_url}:{url}", fetch)
+        return await self.resized(original, width) if width else original
+
+    async def resized(self, original: Path, width: int) -> Path:
+        """缩略图 (同目录, 文件名带宽度); 没装 Pillow 时 (镜像还没重新构建) 返回原图."""
+        target = original.with_name(f"{original.stem}_w{width}.jpg")
+        if target.exists():
+            return target
+        try:
+            from PIL import Image
+        except ImportError:
+            return original
+
+        def work() -> Path:
+            with Image.open(original) as im:
+                if im.width <= width:
+                    return original
+                im = im.convert("RGB")
+                im.thumbnail((width, width * 4))
+                tmp = target.with_suffix(".part")
+                im.save(tmp, "JPEG", quality=82, optimize=True)
+                tmp.replace(target)
+            return target
+
+        try:
+            return await asyncio.to_thread(work)
+        except OSError:
+            return original
 
     async def _load(self, cache_key: str, fetch: Callable[[], Awaitable[httpx.Response]]) -> Path:
         key = hashlib.sha1(cache_key.encode()).hexdigest()

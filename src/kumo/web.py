@@ -24,7 +24,6 @@ from pydantic import ValidationError
 from . import __version__
 from .db import Repo
 from .amane import AmaneError
-from .feeds import render_release_rss, render_resource_rss, render_rss
 from .images import ImageCache, ImageError
 from .magnets import SITES, SiteError
 from .models import FILTER_TAGS, SOURCE_KINDS, STATUS_LABELS, TAG_LABELS, MagnetSource, SourceFilter, WantedStatus, format_size
@@ -51,7 +50,7 @@ _TEMPLATES.env.filters["ts"] = lambda t: datetime.fromtimestamp(t).strftime("%m-
 # 资料站图片经 kumo 代理 (JavBus 校验 Referer, 直接引用会 403).
 _TEMPLATES.env.filters["img"] = lambda url: f"/img?u={quote(url, safe='')}" if url else ""
 # Amane 的海报 / 封面 / 演员图, 由 kumo 带 token 去 Amane 取.
-_TEMPLATES.env.filters["amane_img"] = lambda url: f"/img/amane?u={quote(url, safe='')}" if url else ""
+_TEMPLATES.env.filters["amane_img"] = lambda url, w=None: (f"/img/amane?u={quote(url, safe='')}" + (f"&w={w}" if w else "")) if url else ""
 
 
 def _cover(release: Any = None, work: Any = None, magnets: Any = (), *, hires: bool = False) -> str:
@@ -71,7 +70,19 @@ def _cover(release: Any = None, work: Any = None, magnets: Any = (), *, hires: b
     return ""
 
 
+def _poster(release: Any = None, work: Any = None, magnets: Any = ()) -> tuple[str, bool]:
+    """挑选作品的竖版小图: Amane 的海报 (缩成 320 宽) 优先; 没有时用横版封面 (第二项为真, 页面裁出右半边的正面).
+
+    Amane 里还没有的作品会被自动提交刮削, 刮好之后就换成海报.
+    """
+    if work is not None and work.poster:
+        return f"/img/amane?u={quote(work.poster, safe='')}&w=320", False
+    url = _cover(release, None, magnets)
+    return url, bool(url)
+
+
 _TEMPLATES.env.globals["cover"] = _cover
+_TEMPLATES.env.globals["poster"] = _poster
 _TEMPLATES.env.globals["today"] = lambda: datetime.now().strftime("%Y-%m-%d")
 _TEMPLATES.env.globals.update(
     STATUS_LABELS=STATUS_LABELS, TAG_LABELS=TAG_LABELS, KIND_LABELS=KIND_LABELS, SOURCE_LABELS=SOURCE_LABELS,
@@ -100,8 +111,6 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
     @app.middleware("http")
     async def basic_auth(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
         if not env.password or request.url.path == "/health":
-            return await call_next(request)
-        if request.url.path.startswith("/rss") and secrets.compare_digest(request.query_params.get("key", ""), env.password):
             return await call_next(request)
         header = request.headers.get("authorization", "")
         if header.startswith("Basic "):
@@ -316,10 +325,6 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
         tags = [t for t in request.query_params.getlist("tag") if t in TAG_LABELS]
         if forum or typeid:
             sources = ["sehuatang"]
-        params = {k: v for k, v in (("fid", forum), ("typeid", typeid), ("subtitle", subtitle), ("q", q.strip())) if v}
-        rss_url = str(request.base_url) + "rss/sehuatang.xml" + ("?" + urlencode(params) if params else "")
-        if env.password:
-            rss_url += ("&" if params else "?") + "key=<密码>"
         return page(
             request,
             "resources.html",
@@ -343,7 +348,6 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
             forum=forum,
             typeid=typeid,
             subtitle=subtitle,
-            rss_url=rss_url,
             has_sources=bool(repo.sources(enabled_only=True)),
         )
 
@@ -547,13 +551,9 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
         items = items[:shown]
         query = [(k, v) for k, v in request.query_params.multi_items() if k not in ("n", "message")]
         more_url = f"{request.url.path}?{urlencode([*query, ('n', shown + _PAGE)])}"
-        params = {k: v for k, v in (("sub", sub), ("q", q.strip()), ("days", days)) if v}
-        rss_url = str(request.base_url) + "rss/releases.xml" + ("?" + urlencode(params) if params else "")
-        if env.password:
-            rss_url += ("&" if params else "?") + "key=<密码>"
         return page(
             request, "works.html", items=items, subs=s.repo.subscriptions(), sources=s.repo.sources(), origin=origin, sub=sub,
-            src=src, tags=tags, q=q, days=days, todo=todo, message=message, rss_url=rss_url, more=more, more_url=more_url,
+            src=src, tags=tags, q=q, days=days, todo=todo, message=message, more=more, more_url=more_url,
         )
 
     @app.get("/works/{number}", response_class=HTMLResponse)
@@ -570,6 +570,12 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
             sukebei=sukebei,
         )
 
+    @app.post("/works/{number}/scrape")
+    async def scrape_work(request: Request, number: str) -> RedirectResponse:
+        """作品页: 让 Amane 刮削这个番号."""
+        message = await svc(request).request_scrape(number)
+        return back(_with_flash(f"/works/{quote(number, safe='')}", message))
+
     @app.post("/works/{action}")
     async def works_action(request: Request, action: str) -> RedirectResponse:
         """挑选: ``queue`` 加入下载队列 (之后磁力选择), ``dismiss`` 忽略, ``undismiss`` 取消忽略."""
@@ -581,6 +587,9 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
             added = s.queue_numbers(numbers)
             if added:
                 asyncio.create_task(s.run_guarded("search", s.run_search))
+                if "amane" not in s.running:
+                    # 队列里的作品优先: 马上查 Amane, 没有的就让 Amane 刮削, 下载完成前元数据就绪.
+                    asyncio.create_task(s.run_guarded("amane", s.run_amane))
             message = f"已加入下载队列 {added} 部, 接下来自动磁力选择 (已在队列中的跳过)"
         elif action == "dismiss":
             s.repo.dismiss_numbers(numbers)
@@ -624,9 +633,8 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
         if group is None:
             raise HTTPException(404)
         items = s.repo.releases(sub_ids=group.sub_ids, not_queued=todo == "1", limit=2000)
-        rss_url = f"{request.base_url}rss/releases.xml?sub={','.join(map(str, group.sub_ids))}"
         return page(
-            request, "actress.html", g=group, items=items, todo=todo, message=message, rss_url=rss_url,
+            request, "actress.html", g=group, items=items, todo=todo, message=message,
             **_shared(s, [r.number for r, *_ in items]),
         )
 
@@ -654,30 +662,18 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
         return FileResponse(path, headers={"Cache-Control": "public, max-age=2592000"})
 
     @app.get("/img/amane")
-    async def amane_image(request: Request, u: str) -> Response:
+    async def amane_image(request: Request, u: str, w: int | None = None) -> Response:
         amane = svc(request).amane()
         if amane is None:
             raise HTTPException(404, "未接入 Amane")
+        width = w if w in _THUMB_WIDTHS else None
         try:
-            path = await request.app.state.images.get_amane(u, amane)
+            path = await request.app.state.images.get_amane(u, amane, width=width)
         except ImageError as exc:
             raise HTTPException(404, str(exc)) from exc
         finally:
             await amane.aclose()
         return FileResponse(path, headers={"Cache-Control": "public, max-age=2592000"})
-
-    @app.get("/rss/releases.xml")
-    async def rss_releases(
-        request: Request, sub: str = "", kind: str = "", q: str = "", days_: str = Query("", alias="days"), limit: int = 100
-    ) -> Response:
-        """订阅新作 RSS, 供 Amane 刮削元数据; 参数与新作页面的筛选一致."""
-        days = _opt_int(days_)
-        s = svc(request)
-        sub_ids, kinds = _release_filters(sub, kind)
-        rows = s.repo.releases(sub_ids=sub_ids, kinds=kinds, search=q.strip(), days=days, limit=max(1, min(limit, 500)))
-        label = " ".join(x for x in ("kumo 新作", sub and f"sub={sub}", kind, q) if x)
-        body = render_release_rss([(r, subs) for r, subs, _, _ in rows], title=label, link=str(request.url))
-        return Response(body, media_type="application/rss+xml; charset=utf-8")
 
     # --- 手动触发与日志 ---
 
@@ -708,50 +704,7 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
     async def events(request: Request) -> HTMLResponse:
         return page(request, "events.html", events=svc(request).repo.events(300))
 
-    # --- 输出 RSS 与健康检查 ---
-
-    @app.get("/rss.xml")
-    async def rss(request: Request) -> Response:
-        s = svc(request)
-        statuses = [WantedStatus(x) for x in s.settings.rss_statuses if x in WantedStatus._value2member_map_]
-        items = []
-        for w in s.repo.list_wanted(statuses, limit=300):
-            cand = s.repo.candidate(w.chosen_id) if w.chosen_id else None
-            items.append((w, cand.title if cand else ""))
-        items.sort(key=lambda it: it[0].submitted_at or it[0].updated_at, reverse=True)
-        return Response(render_rss(items, link=str(request.base_url)), media_type="application/rss+xml; charset=utf-8")
-
-    @app.get("/rss/sehuatang.xml")
-    async def rss_sehuatang(
-        request: Request,
-        fid: str = "",
-        typeid: str = "",
-        subtitle: str = "",
-        q: str = "",
-        numbered: str = "1",
-        limit: int = 100,
-    ) -> Response:
-        """按参数筛选的论坛资源 RSS; 每组参数就是一个可单独订阅的源."""
-        try:
-            forum_ids = _int_list(fid)
-            type_ids = _int_list(typeid)
-        except ValueError as exc:
-            raise HTTPException(400, "fid / typeid 应为逗号分隔的数字") from exc
-        s = svc(request)
-        items = s.repo.resources(
-            search=q.strip(),
-            sources=["sehuatang"],
-            forum_ids=forum_ids,
-            type_ids=type_ids,
-            subtitle=True if subtitle == "1" else None,
-            numbered=numbered != "0",
-            with_magnet=True,
-            limit=max(1, min(limit, 500)),
-        )
-        site = Sehuatang(s.settings.crawl_base_url)
-        label = " ".join(x for x in ("sehuatang", fid and f"fid={fid}", typeid and f"typeid={typeid}", q) if x)
-        body = render_resource_rss(items, title=label, link=str(request.url), thread_url=site.thread_url)
-        return Response(body, media_type="application/rss+xml; charset=utf-8")
+    # --- 健康检查 ---
 
     @app.get("/health")
     async def health() -> dict[str, str]:
@@ -850,6 +803,9 @@ def _source_from_form(form: Any, src: MagnetSource) -> MagnetSource:
         params = {"url": url}
         default_name = urlsplit(url).hostname or url
     multi = form.getlist if hasattr(form, "getlist") else (lambda k: [])
+    extra = [t for t in multi("extra_tags") if t in TAG_LABELS]
+    if extra:
+        params["extra_tags"] = extra
     flt = SourceFilter(
         tags_all=[t for t in multi("tags_all") if t in TAG_LABELS],
         tags_any=[t for t in multi("tags_any") if t in TAG_LABELS],
@@ -865,6 +821,9 @@ def _source_from_form(form: Any, src: MagnetSource) -> MagnetSource:
         enabled=src.enabled, auto_download="auto_download" in data,
     )
 
+
+#: 允许的缩略图宽度 (不接受任意值, 免得缓存里堆满各种尺寸).
+_THUMB_WIDTHS = (240, 320, 480)
 
 #: 挑选作品每次多显示的数量.
 _PAGE = 120

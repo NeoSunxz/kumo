@@ -56,6 +56,13 @@
       {% if a and amane_url %}<a class="btn sm ghost" href="{{ amane_url }}/meta/{{ a.id }}" target="_blank" rel="noreferrer">在 Amane 中打开 ↗</a>{% endif %}
       {% if a and a.trailer %}<a class="btn sm ghost" href="{{ a.trailer }}" target="_blank" rel="noreferrer">预告片 ↗</a>{% endif %}
     </form>
+    {% if d.has_amane and not a %}
+    <form method="post" action="/works/{{ d.number|urlencode }}/scrape" class="bar">
+      {% if d.scrape_requested_at %}<span class="small muted">已提交刮削（{{ d.scrape_requested_at|ts }}），Amane 刮好后 kumo 下一轮同步时取回海报、简介、演员</span>
+        <button class="sm ghost">重新提交</button>
+      {% else %}<span class="small muted">Amane 里还没有这部作品</span><button class="sm">让 Amane 刮削</button>{% endif %}
+    </form>
+    {% endif %}
     {% if d.subs %}<div class="small muted">片源订阅：{% for s in d.subs %}<a href="/?origin=subs&sub={{ s.id }}">{{ s.name }}</a>{% if not loop.last %}、{% endif %}{% endfor %}</div>{% endif %}
   </div>
 </div>

@@ -1,6 +1,7 @@
-"""读取 Amane 的作品与演员信息, 用作 kumo 页面的海报、封面、演员图等内容.
+"""读取 Amane 的作品与演员信息, 用作 kumo 页面的海报、封面、演员图等内容; 按番号让 Amane 刮削.
 
-只读 Amane 的 HTTP 接口 (``/api/metadata``、``/api/actors``), 不写入 Amane. Amane 设了 API token 时
+读 Amane 的 HTTP 接口 (``/api/metadata``、``/api/actors``); 唯一的写入是提交刮削任务 (``POST /api/tasks``).
+Amane 不对同一番号去重, 由 kumo 记下提交过的番号. Amane 设了 API token 时
 用 ``Authorization: Bearer`` 访问. 图片地址可能是外链, 也可能是 Amane 本地的 ``/api/resources/{hash}``;
 都由 kumo 带 token 经 Amane 取回 (外链走 Amane 的 ``/api/resources/proxy``), 见 ``fetch_image``.
 """
@@ -63,6 +64,18 @@ class Amane:
 
     async def aclose(self) -> None:
         await self._client.aclose()
+
+    async def scrape(self, number: str) -> int:
+        """让 Amane 按番号刮削 (内容类型由 Amane 按番号推断); 返回任务编号."""
+        try:
+            resp = await self._client.post("/api/tasks", json={"type": "scrape", "number": amane_number(number)})
+        except httpx.HTTPError as exc:
+            raise AmaneError(f"无法访问 Amane: {type(exc).__name__}") from exc
+        if resp.status_code == 401:
+            raise AmaneError("Amane 拒绝访问, 请检查 API token")
+        if resp.status_code not in (200, 201, 202):
+            raise AmaneError(f"Amane 提交刮削失败: HTTP {resp.status_code} {resp.text[:120]}")
+        return int(resp.json().get("id") or 0)
 
     async def _get(self, path: str, params: dict[str, Any]) -> Any:
         try:

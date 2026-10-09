@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 
@@ -36,12 +37,16 @@ class FakeAmane:
     def __init__(self, token: str = "tk") -> None:
         self.token = token
         self.calls: list[httpx.Request] = []
+        self.scraped: list[str] = []
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.calls.append(request)
         if self.token and request.headers.get("authorization") != f"Bearer {self.token}":
             return httpx.Response(401, json={"detail": "缺少或无效的 API token."})
         path = request.url.path
+        if path == "/api/tasks" and request.method == "POST":
+            self.scraped.append(json.loads(request.content)["number"])
+            return httpx.Response(202, json={"id": 100 + len(self.scraped), "type": "scrape"})
         if path == "/api/metadata":
             q = request.url.params.get("search", "").casefold()
             items = [i for i in METADATA["items"] if q in i["number"].casefold()]
@@ -124,6 +129,9 @@ async def test_run_amane_caches_works_and_actors(service: Service, amane: FakeAm
     # 下载队列先查, 然后是磁力池, 最后是作品库
     numbers = [c.url.params["search"] for c in amane.calls if c.url.path == "/api/metadata"]
     assert numbers == ["QQQ-100", "XYZ-999", "ABC-001"]
+    # Amane 里没有的让 Amane 刮削, 队列里的优先
+    assert amane.scraped == ["QQQ-100", "XYZ-999"]
+    assert service.repo.scrape_status("QQQ-100")[1] is not None
     assert set(service.repo.works(["ABC-001", "XYZ-999", "QQQ-100"])) == {"ABC-001"}  # 没找到的也记下, 但不当作品返回
 
     group = service.actress_group(sub.id)
@@ -244,3 +252,35 @@ def test_work_page_without_amane(service: Service, tmp_path: Path) -> None:
     with TestClient(create_app(Env(data_dir=tmp_path, password=""), service=service)) as c:
         page = c.get("/works/XYZ-002").text
         assert "XYZ-002 中文字幕" in page and "来自 98堂帖子" in page and "/img/res/1/1" in page and "加入下载队列" in page
+
+
+async def test_auto_scrape_respects_limit_switch_and_handled(service: Service, amane: FakeAmane) -> None:
+    service.repo.save_settings(Settings(app_id="test", amane_url="http://amane:8000", amane_token="tk", amane_scrape_per_run=1))
+    service.add_numbers(["QQQ-200"])
+    service.repo.add_resource(Resource(source="sukebei", tid=2, forum_id=0, forum_name="", type_name="", title="XYZ-300", number="XYZ-300",
+                                       magnet="magnet:?xt=urn:btih:" + "b" * 40, info_hash="b" * 40))
+    service.repo.add_resource(Resource(source="sukebei", tid=3, forum_id=0, forum_name="", type_name="", title="IGN-001", number="IGN-001",
+                                       magnet="magnet:?xt=urn:btih:" + "c" * 40, info_hash="c" * 40))
+    service.repo.dismiss_numbers(["IGN-001"])  # 忽略的不提交
+    await service.run_amane()
+    assert amane.scraped == ["QQQ-200"]  # 每轮上限 1
+    await service.run_amane()
+    assert amane.scraped == ["QQQ-200", "XYZ-300"]  # 提交过的不重复
+    await service.run_amane()
+    assert amane.scraped == ["QQQ-200", "XYZ-300"]
+
+    service.repo.save_settings(Settings(app_id="test", amane_url="http://amane:8000", amane_token="tk", amane_auto_scrape=False))
+    service.add_numbers(["QQQ-201"])
+    await service.run_amane()
+    assert "QQQ-201" not in amane.scraped
+
+
+async def test_manual_scrape_from_work_page(service: Service, amane: FakeAmane, tmp_path: Path) -> None:
+    service.add_numbers(["QQQ-300"])
+    with TestClient(create_app(Env(data_dir=tmp_path, password=""), service=service)) as c:
+        page = c.get("/works/QQQ-300").text
+        assert "让 Amane 刮削" in page
+        r = c.post("/works/QQQ-300/scrape", follow_redirects=False)
+        assert r.status_code == 303 and r.headers["location"].startswith("/works/QQQ-300?flash=")
+        assert amane.scraped == ["QQQ-300"]
+        assert "已提交刮削" in c.get("/works/QQQ-300").text

@@ -247,6 +247,7 @@ class Service:
             amane_error=amane_error, actors=actors,
             wanted=self.repo.wanted_by_number(number), owned=self.repo.owned(number),
             dismissed=bool(self.repo.dismissed_numbers([key])),
+            scrape_requested_at=self.repo.scrape_status(number)[1], has_amane=amane is not None,
         )
 
     async def _amane_detail(self, amane: Amane, amane_id: int) -> AmaneDetail:
@@ -626,7 +627,9 @@ class Service:
                     known += 1
                     continue
                 number = extract_number(ref.title)
-                if not src.filter.accepts(ref.title, _forum_tags(forum_name, ref.title, number), brackets(ref.title), ref.type_name, number):
+                if not src.filter.accepts(
+                    ref.title, _forum_tags(forum_name, ref.title, number) | src.extra_tags, brackets(ref.title), ref.type_name, number
+                ):
                     self.repo.mark_seen(src.id, key)
                     continue
                 await asyncio.sleep(s.crawl_request_delay)
@@ -638,7 +641,7 @@ class Service:
                     continue
                 title = detail.title or ref.title
                 number = extract_number(title)
-                tags = _forum_tags(forum_name, title, number)
+                tags = _forum_tags(forum_name, title, number) | src.extra_tags
                 self._pool(src, Resource(
                     source="sehuatang", tid=ref.tid, forum_id=fid, forum_name=forum_name, type_id=ref.type_id,
                     type_name=ref.type_name, title=title, number=number, magnet=detail.magnet,
@@ -690,7 +693,7 @@ class Service:
             if self.repo.resource_exists("sukebei", item.id) or self.repo.is_seen(src.id, str(item.id)):
                 continue
             number = extract_number(cand.title)
-            tags = title_tags(cand.title, number)
+            tags = title_tags(cand.title, number) | src.extra_tags
             min_seeders = int(p.get("min_seeders") or 0)  # type: ignore[call-overload]
             if (
                 (p.get("trusted_only") and not item.trusted)
@@ -726,7 +729,7 @@ class Service:
                 if self.repo.is_seen(src.id, entry.key):
                     continue
                 self.repo.mark_seen(src.id, entry.key)
-                tags = title_tags(entry.title, entry.number)
+                tags = title_tags(entry.title, entry.number) | src.extra_tags
                 if not src.filter.accepts(entry.title, tags, brackets(entry.title), number=entry.number):
                     continue
                 if entry.number is None:
@@ -802,7 +805,7 @@ class Service:
         self, src: MagnetSource, title: str, type_name: str = "", *, known: bool = False, forum_name: str = ""
     ) -> PreviewRow:
         number = extract_number(title)
-        tags, marks = _forum_tags(forum_name, title, number), brackets(title)
+        tags, marks = _forum_tags(forum_name, title, number) | src.extra_tags, brackets(title)
         reason = src.filter.reject_reason(title, tags, marks, type_name, number)
         return PreviewRow(title=title, number=number, tags=tags, brackets=marks, type_name=type_name, reason=reason, known=known)
 
@@ -826,12 +829,42 @@ class Service:
                     if cached and cached.checked_at >= refresh_before:
                         continue
                     self.repo.save_amane_actor(await amane.actor(name))
+                scraped = await self._auto_scrape(amane) if s.amane_auto_scrape else 0
             except AmaneError as exc:
                 raise SiteError(f"Amane: {exc}") from exc
             finally:
                 await amane.aclose()
-            if found:
-                self.repo.log("info", f"Amane: 取到 {found} 部作品的信息")
+            if found or scraped:
+                self.repo.log("info", f"Amane: 取到 {found} 部作品的信息, 让 Amane 刮削 {scraped} 部")
+
+    def _recheck_soon(self) -> float:
+        """提交刮削后写入的「上次查询时间」: 15 分钟后到期, 下一轮同步就会重新查."""
+        return time.time() - self.settings.amane_refresh_days * 86400 + 15 * 60
+
+    async def _auto_scrape(self, amane: Amane) -> int:
+        """Amane 里没有的作品让 Amane 刮削: 下载队列里的优先, 其次待挑选的; 同一番号 7 天内 (按刷新周期) 不重复提交."""
+        s = self.settings
+        retry_before = time.time() - s.amane_refresh_days * 86400
+        numbers = self.repo.numbers_to_scrape(retry_before, s.amane_scrape_per_run)
+        for number in numbers:
+            await amane.scrape(number)
+            self.repo.mark_scrape_requested(number, self._recheck_soon())
+        return len(numbers)
+
+    async def request_scrape(self, number: str) -> str:
+        """作品页上手动让 Amane 刮削; 返回给用户看的提示."""
+        amane = self.amane()
+        if amane is None:
+            return "还没有接入 Amane"
+        try:
+            task_id = await amane.scrape(number)
+        except AmaneError as exc:
+            return f"提交失败: {exc}"
+        finally:
+            await amane.aclose()
+        self.repo.mark_scrape_requested(number, self._recheck_soon())
+        self.repo.log("info", f"{number} 已让 Amane 刮削 (任务 {task_id})")
+        return f"已让 Amane 刮削 (任务 {task_id}), 一般几分钟完成; kumo 下一轮同步 Amane 时取回信息 (也可以在下载队列页「立即执行 → 同步 Amane」)"
 
     # --- 调度循环 ---
 
@@ -959,6 +992,9 @@ class WorkDetail:
     wanted: Wanted | None
     owned: list[LibraryFile]
     dismissed: bool
+    scrape_requested_at: float | None = None
+    """让 Amane 刮削的时间 (还没刮好时显示)."""
+    has_amane: bool = False
 
     @property
     def title(self) -> str:
@@ -1061,9 +1097,10 @@ def _name_key(name: str) -> str:
 
 def _resource_candidate(r: Resource) -> Candidate:
     assert r.magnet and r.info_hash
+    # 带上入池时记下的标签: 字幕板块、订阅「统一加标签」这些标题里看不出来.
     return Candidate(
         site=r.source, title=r.title, magnet=r.magnet, info_hash=r.info_hash, size=r.size, published=r.posted,
-        seeders=r.seeders, tags={Tag.SUBTITLE} if r.subtitle else set(),
+        seeders=r.seeders, tags=set(r.tags) | ({Tag.SUBTITLE} if r.subtitle else set()),
     )
 
 

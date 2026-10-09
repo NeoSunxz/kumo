@@ -4,7 +4,7 @@ import xml.etree.ElementTree as ET
 
 import pytest
 
-from kumo.feeds import parse_feed, render_rss, torrent_to_magnet
+from kumo.feeds import parse_feed, torrent_to_magnet
 from kumo.models import Wanted, WantedStatus
 
 H = "61abb869985ebdf581c16347ae3d70aa68f7ab92"
@@ -57,16 +57,3 @@ def test_torrent_to_magnet_rejects_invalid(data: bytes) -> None:
         torrent_to_magnet(data)
 
 
-def test_render_rss_title_is_number_only_and_xml_escaped() -> None:
-    now = time.time()
-    w = Wanted(
-        id=1, number="MNGS-005", status=WantedStatus.SUBMITTED, source="manual", note="", chosen_id=1, info_hash=H,
-        percent=0, searched_at=now, submitted_at=now, done_at=None, created_at=now, updated_at=now,
-    )
-    xml = render_rss([(w, "标题 <&> 测试")], link="http://kumo/")
-    root = ET.fromstring(xml)
-    item = root.find("channel/item")
-    assert item is not None
-    assert item.findtext("title") == "MNGS-005"
-    assert item.findtext("guid") == "kumo-MNGS-005"
-    assert item.findtext("description") == "标题 <&> 测试"

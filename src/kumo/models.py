@@ -284,6 +284,11 @@ class MagnetSource:
     def label(self) -> str:
         return SOURCE_KINDS.get(self.kind, self.kind)
 
+    @property
+    def extra_tags(self) -> set[str]:
+        """这条订阅的磁力统一加上的标签 (标题里看不出来、但发布者固定是这类资源, 如 sukebei 某发布组都是中字破解)."""
+        return set(self.params.get("extra_tags") or [])  # type: ignore[call-overload]
+
     def describe(self) -> str:
         p = self.params
         if self.kind == "sehuatang":
@@ -295,6 +300,9 @@ class MagnetSource:
             parts += [f"做种≥{p.get('min_seeders')}"] if p.get("min_seeders") else []
             return " · ".join(parts)
         return str(p.get("url", ""))
+
+    def describe_extra(self) -> str:
+        return "都算" + "+".join(TAG_LABELS.get(t, t) for t in sorted(self.extra_tags)) if self.extra_tags else ""
 
 
 @dataclass
@@ -314,6 +322,8 @@ class Work:
     file_count: int = 0
     """Amane 媒体库里关联的文件数; 大于 0 表示已入库."""
     checked_at: float = 0.0
+    scrape_requested_at: float | None = None
+    """让 Amane 刮削的时间; 刮削完成后下次查询就能找到."""
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> Work:

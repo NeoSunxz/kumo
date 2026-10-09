@@ -99,7 +99,6 @@ def test_actress_pages(service: Service, tmp_path: Path) -> None:
 
         detail = c.get(f"/actresses/{jb.id}").text
         assert "AAA-001" in detail and "AAA-009" in detail and "待发行" in detail
-        assert f"rss/releases.xml?sub={jb.id}" in detail
         todo = c.get(f"/actresses/{jb.id}?todo=1").text
         assert "AAA-009" in todo and "AAA-001" not in todo
         assert c.get("/actresses/99999").status_code == 404

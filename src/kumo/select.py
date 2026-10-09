@@ -29,6 +29,12 @@ _H265_WORDS = re.compile(r"h\.?265|x265|hevc", re.I)
 _LEAK_WORDS = re.compile(r"破解|流出|leak|reducing\s*mosaic|去码|去碼|无码化|無碼化", re.I)
 _UNCENSORED_WORDS = re.compile(r"无码|無碼|uncensored|無修正", re.I)
 _WESTERN_WORDS = re.compile(r"欧美|歐美|western")
+#: 标签识别规则的版本; 改了识别规则就改它, 已入池的磁力会在启动时按新规则重新识别.
+TAG_RULES_VERSION = "2026-10-09"
+
+# sukebei 上的发布组标记: [FHDC] 是中字高清版, [UN] / [UNC] 是破解 (跟在有码番号后面).
+_FHDC_MARK = re.compile(r"\[FHDC\]", re.I)
+_UN_MARK = re.compile(r"\[UNC?\]|(?<![A-Z])UNCENSORED[\s._-]*LEAK", re.I)
 _BRACKETS = re.compile(r"\[([^\[\]]{1,30})\]|【([^【】]{1,30})】")
 
 
@@ -54,7 +60,11 @@ def detect_tags(cand: Candidate, number: str) -> set[str]:
         tags.add(Tag.HD)
     if _H265_WORDS.search(title):
         tags.add(Tag.H265)
-    if _LEAK_WORDS.search(title):
+    if _FHDC_MARK.search(title):
+        tags |= {Tag.SUBTITLE, Tag.HD}
+    if _UN_MARK.search(title) and not (number and is_uncensored_number(number)):
+        tags.add(Tag.LEAK)
+    if Tag.LEAK in tags or _LEAK_WORDS.search(title):
         tags.add(Tag.LEAK)
     elif (number and is_uncensored_number(number)) or _UNCENSORED_WORDS.search(title):
         # 破解是有码作品去马赛克, 与无码厂牌原版分开; 「无码破解」只算破解.
