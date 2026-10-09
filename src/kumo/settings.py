@@ -115,7 +115,7 @@ class Settings(BaseModel):
     amane_auto_scrape: bool = True
     """Amane 里没有的作品自动让 Amane 刮削: 下载队列里的优先, 其次是待挑选的."""
     amane_scrape_per_run: int = Field(default=30, ge=0, le=500)
-    """每轮同步最多提交多少个刮削任务 (订阅回填时作品很多, 免得一次塞满 Amane 的队列)."""
+    """每个同步间隔内最多提交多少个刮削任务 (订阅回填时作品很多, 免得一次塞满 Amane 的队列); 进程重启不会重新计数."""
 
     # 订阅 (按女优 / 系列 / 片商等获取新作)
     subs_interval_hours: float = Field(default=12.0, ge=1)

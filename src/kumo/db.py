@@ -735,6 +735,11 @@ class Repo:
                 (number, checked_at, time.time()),
             )
 
+    def scrapes_since(self, since: float) -> int:
+        """``since`` 之后让 Amane 刮削的数量 (限速用, 进程重启也算数)."""
+        row = self._one("SELECT COUNT(*) AS n FROM amane_work WHERE scrape_requested_at >= ?", (since,))
+        return row["n"] if row else 0
+
     def numbers_to_scrape(self, retry_before: float, limit: int) -> list[str]:
         """查过、Amane 里没有、还没提交过刮削 (或上次提交早于 ``retry_before``) 的番号:
         下载队列里的优先, 其次待挑选的 (磁力池、作品库, 新的在前); 已在 115 或已忽略的不提交."""

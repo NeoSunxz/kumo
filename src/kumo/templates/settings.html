@@ -82,7 +82,7 @@
       <input type="password" name="amane_token" value="" placeholder="{{ '••••••（已保存）' if s.amane_token else '' }}" autocomplete="off"></label>
     <label><span>同步间隔（分钟）</span><input type="number" step="any" name="amane_interval_minutes" value="{{ s.amane_interval_minutes }}"></label>
     <label><span>已查过的番号多久后重查（天）</span><input type="number" step="any" name="amane_refresh_days" value="{{ s.amane_refresh_days }}"></label>
-    <label><span>每轮最多让 Amane 刮削几部</span><input type="number" name="amane_scrape_per_run" value="{{ s.amane_scrape_per_run }}" min="0" max="500"></label>
+    <label><span>每个同步间隔最多让 Amane 刮削几部</span><input type="number" name="amane_scrape_per_run" value="{{ s.amane_scrape_per_run }}" min="0" max="500"></label>
   </div>
   <div class="checks"><label class="check"><input type="checkbox" name="amane_auto_scrape" {% if s.amane_auto_scrape %}checked{% endif %}>
     自动让 Amane 刮削它没有的作品（下载队列里的优先，其次待挑选的；新订阅回填作品很多时，按上面的数量分几轮提交）</label></div>

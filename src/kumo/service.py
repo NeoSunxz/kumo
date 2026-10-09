@@ -845,7 +845,11 @@ class Service:
         """Amane 里没有的作品让 Amane 刮削: 下载队列里的优先, 其次待挑选的; 同一番号 7 天内 (按刷新周期) 不重复提交."""
         s = self.settings
         retry_before = time.time() - s.amane_refresh_days * 86400
-        numbers = self.repo.numbers_to_scrape(retry_before, s.amane_scrape_per_run)
+        # 上限按「一个同步间隔内」算, 以数据库里的提交时间为准: 进程重启 (如热加载) 后马上又跑一轮也不会多提交.
+        budget = s.amane_scrape_per_run - self.repo.scrapes_since(time.time() - s.amane_interval_minutes * 60)
+        if budget <= 0:
+            return 0
+        numbers = self.repo.numbers_to_scrape(retry_before, budget)
         for number in numbers:
             await amane.scrape(number)
             self.repo.mark_scrape_requested(number, self._recheck_soon())

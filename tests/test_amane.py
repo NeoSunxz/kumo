@@ -262,10 +262,17 @@ async def test_auto_scrape_respects_limit_switch_and_handled(service: Service, a
     service.repo.add_resource(Resource(source="sukebei", tid=3, forum_id=0, forum_name="", type_name="", title="IGN-001", number="IGN-001",
                                        magnet="magnet:?xt=urn:btih:" + "c" * 40, info_hash="c" * 40))
     service.repo.dismiss_numbers(["IGN-001"])  # 忽略的不提交
+    def later() -> None:  # 过了一个同步间隔
+        service.repo._conn.execute("UPDATE amane_work SET scrape_requested_at = scrape_requested_at - 3600")
+
     await service.run_amane()
-    assert amane.scraped == ["QQQ-200"]  # 每轮上限 1
+    assert amane.scraped == ["QQQ-200"]  # 一个间隔内上限 1
+    await service.run_amane()
+    assert amane.scraped == ["QQQ-200"]
+    later()
     await service.run_amane()
     assert amane.scraped == ["QQQ-200", "XYZ-300"]  # 提交过的不重复
+    later()
     await service.run_amane()
     assert amane.scraped == ["QQQ-200", "XYZ-300"]
 
@@ -284,3 +291,18 @@ async def test_manual_scrape_from_work_page(service: Service, amane: FakeAmane, 
         assert r.status_code == 303 and r.headers["location"].startswith("/works/QQQ-300?flash=")
         assert amane.scraped == ["QQQ-300"]
         assert "已提交刮削" in c.get("/works/QQQ-300").text
+
+
+async def test_scrape_budget_survives_restart(service: Service, amane: FakeAmane, repo: object) -> None:
+    """热加载 / 重启后马上又跑一轮, 也不能超过一个同步间隔的上限."""
+    service.repo.save_settings(Settings(app_id="test", amane_url="http://amane:8000", amane_token="tk", amane_scrape_per_run=2))
+    service.add_numbers(["R-001", "R-002", "R-003", "R-004"])
+    await service.run_amane()
+    assert len(amane.scraped) == 2
+    restarted = Service(service.repo)  # 新进程: 调度记录清空
+    restarted.amane = service.amane  # type: ignore[method-assign]
+    await restarted.run_amane()
+    assert len(amane.scraped) == 2  # 这个间隔的额度已用完
+    service.repo._conn.execute("UPDATE amane_work SET scrape_requested_at = scrape_requested_at - 3600")
+    await restarted.run_amane()
+    assert len(amane.scraped) == 4
