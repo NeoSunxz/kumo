@@ -1,0 +1,6 @@
+#!/bin/sh
+# 开发阶段 main 不接受提交, 开发在 dev 分支
+if [ "$(git symbolic-ref --short HEAD 2>/dev/null)" = "main" ]; then
+  echo "main 分支暂不接受提交, 请切到 dev: git switch dev" >&2
+  exit 1
+fi

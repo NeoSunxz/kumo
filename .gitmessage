@@ -1,0 +1,25 @@
+# <type>(<scope>): <描述>
+#
+# 正文 (可选): 说明为什么改, 有什么影响; 每行不超过 72 字符
+#
+# 脚注 (可选): BREAKING CHANGE: ... / Refs #12
+#
+# 规则: 首行不超过 72 字符, 结尾不加句号; 破坏性变更在冒号前加 !; 首行后空一行
+#
+# type 速查:
+#   feat      新功能
+#   fix       修复缺陷
+#   refactor  重构 (不改变行为)
+#   perf      性能优化
+#   style     格式调整 (不影响逻辑)
+#   test      增加或修改测试
+#   docs      文档
+#   build     构建 / 依赖
+#   ci        持续集成配置
+#   chore     杂项 (不改源码和测试)
+#   revert    回退提交
+#
+# scope 建议: pan115 amane sehuatang magnets feeds numbers select
+#             subscriptions web db(含 models) settings images
+#             service docker
+# 详见 CONTRIBUTING.md

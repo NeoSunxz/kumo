@@ -4,7 +4,8 @@
 
 ## 项目约定
 
-- 和用户交流一律中文; 提交信息也用中文, 风格参照 `git log`
+- 和用户交流一律中文; 提交信息遵循 `CONTRIBUTING.md` 的 Conventional Commits 规范 (type 英文, 描述中文)
+- 开发在 `dev` 分支, `main` 暂不提交
 - `/docker/soft/amane` 是他人代码, 只读研究, 不修改; kumo 对 Amane 只有 `POST /api/tasks` 一个写操作
 - 源码在 `src/kumo/`, 测试在 `tests/`, 测试用内存模拟的 115 (AppID 填 `fake`)
 - 常用命令:
