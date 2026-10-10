@@ -496,3 +496,23 @@ def test_existing_resources_retagged_when_rules_change(tmp_path: Path) -> None:
     repo.set_kv("tag_rules", "old")
     (r,) = Repo(tmp_path / "k.db").resources()
     assert r.tags == {"subtitle", "hd", "leak"}
+
+
+async def test_filtered_items_rechecked_after_condition_change(service: Service, sukebei: dict[str, str], tmp_path: Path) -> None:
+    """被入池条件挡掉的条目记为见过; 改了条件 (或识别规则) 后要重新判断, 不能一直跳过."""
+    src = source(service, query="x", filter=SourceFilter(tags_all=["leak"]))
+    sukebei[Sukebei.rss_url(query="x", category="2_2")] = rss((501, "ABC-501 中文字幕", 9, "5.0 GiB", True))
+    await service.run_sukebei()
+    assert service.repo.resources() == [] and service.repo.is_seen(src.id or 0, "501")
+    with TestClient(create_app(Env(data_dir=tmp_path, password=""), service=service)) as c:
+        c.post(f"/sources/{src.id}", data={"kind": "sukebei", "query": "x", "tags_all": ["subtitle"]})
+    await service.run_sukebei()
+    assert [r.tid for r in service.repo.resources()] == [501]
+
+
+def test_tag_rule_change_clears_seen(tmp_path: Path) -> None:
+    repo = Repo(tmp_path / "k.db")
+    src = repo.add_source(MagnetSource(kind="sukebei", name="s", params={}))
+    repo.mark_seen(src.id or 0, "1")
+    repo.set_kv("tag_rules", "old")
+    assert not Repo(tmp_path / "k.db").is_seen(src.id or 0, "1")

@@ -223,6 +223,9 @@ class Repo:
                 "UPDATE resource SET tags = ?, brackets = ? WHERE id = ?",
                 (json.dumps(sorted(tags)), json.dumps(brackets(r["title"]), ensure_ascii=False), r["id"]),
             )
+        if retag_all:
+            # 「见过」记录里有按旧规则被入池条件挡掉的条目; 规则变了要让它们重新判断.
+            self._conn.execute("DELETE FROM source_seen")
         self._conn.execute(
             "INSERT INTO kv(key, value) VALUES('tag_rules', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             (TAG_RULES_VERSION,),
@@ -669,6 +672,11 @@ class Repo:
             c.execute("DELETE FROM magnet_source WHERE id = ?", (source_id,))
             c.execute("DELETE FROM source_seen WHERE source_id = ?", (source_id,))
             c.execute("UPDATE resource SET source_id = NULL WHERE source_id = ?", (source_id,))
+
+    def clear_seen(self, source_id: int) -> None:
+        """订阅的入池条件改了: 之前被挡掉的条目要按新条件重新判断."""
+        with self._tx() as c:
+            c.execute("DELETE FROM source_seen WHERE source_id = ?", (source_id,))
 
     def mark_seen(self, source_id: int, key: str) -> None:
         """记下被入池条件过滤掉的条目, 之后不再打开, 也作为「翻到已见过的就停」的依据."""

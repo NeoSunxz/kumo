@@ -421,6 +421,8 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
         except ValueError as exc:
             return back(_with_flash(f"/sources#src-{source_id}", f"保存失败: {exc}"))
         repo.update_source(source_id, name=new.name, params=new.params, filter=new.filter, auto_download=new.auto_download)
+        if new.params != src.params or new.filter != src.filter:
+            repo.clear_seen(source_id)  # 条件变了, 之前挡掉的重新判断
         return back(_with_flash(f"/sources#src-{source_id}", f"已保存「{new.name}」"))
 
     @app.post("/sources/{source_id}/{action}")

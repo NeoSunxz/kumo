@@ -30,7 +30,7 @@ _LEAK_WORDS = re.compile(r"破解|流出|leak|reducing\s*mosaic|去码|去碼|�
 _UNCENSORED_WORDS = re.compile(r"无码|無碼|uncensored|無修正", re.I)
 _WESTERN_WORDS = re.compile(r"欧美|歐美|western")
 #: 标签识别规则的版本; 改了识别规则就改它, 已入池的磁力会在启动时按新规则重新识别.
-TAG_RULES_VERSION = "2026-10-09"
+TAG_RULES_VERSION = "2026-10-10"
 
 # sukebei 上的发布组标记: [FHDC] 是中字高清版, [UN] / [UNC] 是破解 (跟在有码番号后面).
 _FHDC_MARK = re.compile(r"\[FHDC\]", re.I)
