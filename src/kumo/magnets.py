@@ -231,6 +231,20 @@ def parse_sukebei_html(text: str) -> tuple[list[SukebeiItem], int]:
     return items, max(pages + ([int(current.group(1))] if current else []) + [1])
 
 
+_NYAA_DESC = re.compile(r'<div[^>]*id="torrent-description"[^>]*>(.*?)</div>', re.S)
+_IMAGE_URL = re.compile(r"https?://[^\s)\]\"'<>]+?\.(?:jpe?g|png|webp|gif)(?:\?[^\s)\]\"'<>]*)?", re.I)
+
+
+def parse_sukebei_view(text: str) -> list[str]:
+    """种子详情页描述里的图片 (发布者常贴封面 / 截图, 如 DMM 的竖版封面); 按出现顺序去重, 最多 8 张."""
+    desc = _NYAA_DESC.search(text)
+    images: list[str] = []
+    for url in _IMAGE_URL.findall(html.unescape(desc.group(1)) if desc else ""):
+        if url not in images:
+            images.append(url)
+    return images[:8]
+
+
 def parse_sukebei_rss(text: str) -> list[Candidate]:
     return [item.candidate for item in parse_sukebei_items(text)]
 

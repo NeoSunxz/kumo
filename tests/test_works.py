@@ -573,3 +573,31 @@ def test_backfill_form_validation(service: Service, tmp_path: Path, monkeypatch:
         assert "从小到大" in go("5", "2") and "最多 9 页" in go("2", "12")
         assert "开始回填" in go("2", "4")
     assert started == [(src.id, 2, 4)]
+
+
+def test_parse_sukebei_view_images() -> None:
+    from kumo.magnets import parse_sukebei_view
+
+    assert parse_sukebei_view(fixture_text("sukebei_view_4726897.html")) == [
+        "https://awsimgsrc.dmm.co.jp/pics_dig/digital/video/jur00838/jur00838ps.jpg"
+    ]
+    assert parse_sukebei_view(fixture_text("sukebei_view_4344176.html"))[0] == "https://3minx.com/upload/qsQQ8fInuDsdDjA-MNGS-005.jpg"
+
+
+async def test_sukebei_intake_fetches_cover_and_fills_old(service: Service, sukebei: dict[str, str], tmp_path: Path) -> None:
+    src = source(service, query="x")
+    view = '<div id="torrent-description">![c](https://img.example/{n}.jpg)</div>'
+    sukebei["https://sukebei.nyaa.si/view/701"] = view.format(n="701")
+    sukebei["https://sukebei.nyaa.si/view/700"] = view.format(n="700")
+    old = service.repo.add_resource(Resource(source="sukebei", tid=700, forum_id=0, forum_name="", type_name="", title="ABC-700",
+                                             number="ABC-700", source_id=src.id))
+    service.repo._conn.execute("UPDATE resource SET images = NULL WHERE id = ?", (old.id,))  # 旧数据: 没取过图
+    sukebei[Sukebei.rss_url(query="x", category="2_2")] = rss((701, "ABC-701", 9, "5.0 GiB", True))
+    await service.run_sukebei()
+    imgs = {r.tid: r.images for r in service.repo.resources()}
+    assert imgs == {701: ["https://img.example/701.jpg"], 700: ["https://img.example/700.jpg"]}
+    with TestClient(create_app(Env(data_dir=tmp_path, password=""), service=service)) as c:
+        page = c.get("/?origin=magnet").text
+        r701 = next(r for r in service.repo.resources() if r.tid == 701)
+        expected = f'class="wpic" href="/works/ABC-701" style="background-image:url(' + f"'/img/res/{r701.id}/0'" + ')"'
+        assert expected in page  # 竖版封面不加 wide (不裁右半边)

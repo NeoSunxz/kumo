@@ -223,6 +223,10 @@ class Repo:
                 "UPDATE resource SET tags = ?, brackets = ? WHERE id = ?",
                 (json.dumps(sorted(tags)), json.dumps(brackets(r["title"]), ensure_ascii=False), r["id"]),
             )
+        if not self._conn.execute("SELECT 1 FROM kv WHERE key = 'sukebei_images'").fetchone():
+            # sukebei 以前入池时不取图 (存的是空列表); 标成没取过, 之后爬取时补.
+            self._conn.execute("UPDATE resource SET images = NULL WHERE source = 'sukebei' AND images = '[]'")
+            self._conn.execute("INSERT INTO kv(key, value) VALUES('sukebei_images', '1')")
         if retag_all:
             # 「见过」记录里有按旧规则被入池条件挡掉的条目; 规则变了要让它们重新判断.
             self._conn.execute("DELETE FROM source_seen")
@@ -526,6 +530,18 @@ class Repo:
         sql += " ORDER BY crawled_at DESC, tid DESC LIMIT ?"
         params.append(limit)
         return [Resource.from_row(r) for r in self._all(sql, params)]
+
+    def resources_missing_images(self, source: str, source_id: int | None, limit: int) -> list[Resource]:
+        """还没取过图的资源 (images 为 NULL; 取过但没有图的存的是空列表)."""
+        rows = self._all(
+            "SELECT * FROM resource WHERE source = ? AND source_id IS ? AND images IS NULL ORDER BY crawled_at DESC LIMIT ?",
+            (source, source_id, limit),
+        )
+        return [Resource.from_row(r) for r in rows]
+
+    def set_resource_images(self, resource_id: int, images: list[str]) -> None:
+        with self._tx() as c:
+            c.execute("UPDATE resource SET images = ? WHERE id = ?", (json.dumps(images), resource_id))
 
     def resources_for_number(self, number: str) -> list[Resource]:
         """磁力池里这个番号的全部资源 (含没有磁力的), 作品页用."""

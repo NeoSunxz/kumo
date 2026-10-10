@@ -34,7 +34,9 @@ from .amane import Amane, AmaneDetail, AmaneError, AmaneStream
 from .db import Repo
 from .images import ImageCache, ImageError
 from .feeds import parse_feed, torrent_to_magnet
-from .magnets import SITES, Fetcher, SiteError, Sukebei, SukebeiItem, parse_sukebei_html, parse_sukebei_items
+from .magnets import (
+    SITES, Fetcher, SiteError, Sukebei, SukebeiItem, parse_sukebei_html, parse_sukebei_items, parse_sukebei_view,
+)
 from .models import (
     AmaneActor, Candidate, LibraryFile, MagnetSource, Release, Resource, SourceFilter, Subscription, Tag, Wanted,
     WantedStatus, Work, info_hash_of,
@@ -51,6 +53,7 @@ log = logging.getLogger("kumo")
 VIDEO_EXTS = frozenset({".mp4", ".mkv", ".avi", ".wmv", ".mov", ".ts", ".m2ts", ".iso", ".rmvb", ".flv", ".webm", ".m4v", ".mpg", ".mpeg"})
 _TICK = 30.0
 _SEARCH_PER_TICK = 5
+_SUKEBEI_REFERER = "https://sukebei.nyaa.si/"
 
 
 class Service:
@@ -672,7 +675,7 @@ class Service:
                     source_id=src.id, images=detail.images,
                 ))
                 if detail.images:
-                    self._prefetch(detail.images[0])
+                    self._prefetch(detail.images[0], self.settings.crawl_base_url.rstrip("/") + "/")
                 added += 1
             if not refs or (pages is None and known):
                 break
@@ -711,11 +714,10 @@ class Service:
                 await fetcher.aclose()
                 self.backfilling.pop(source_id, None)
 
-    def _prefetch(self, url: str) -> None:
+    def _prefetch(self, url: str, referer: str) -> None:
         """后台取回帖子的封面放进缓存; 失败不要紧, 打开页面时还会再取."""
         if self.images is None:
             return
-        referer = self.settings.crawl_base_url.rstrip("/") + "/"
         cache, proxy = self.images, self.settings.scrape_proxy
 
         async def fetch() -> None:
@@ -759,10 +761,30 @@ class Service:
                 await asyncio.sleep(self.settings.crawl_request_delay)
             if page is not None:
                 self._progress(src, page, pages)
-            added += self._intake_sukebei(src, await self._sukebei_page(src, fetcher, page))
+            added += await self._intake_sukebei(src, await self._sukebei_page(src, fetcher, page), fetcher)
+        await self._fill_sukebei_images(src, fetcher)
         return added
 
-    def _intake_sukebei(self, src: MagnetSource, items: list[SukebeiItem]) -> int:
+    async def _sukebei_images(self, fetcher: Fetcher, tid: int) -> list[str]:
+        """打开种子详情页取描述里的图; 失败返回空 (不影响入池)."""
+        await asyncio.sleep(self.settings.crawl_request_delay)
+        try:
+            status, text = await fetcher.get_text(f"{Sukebei.base}/view/{tid}")
+        except SiteError as exc:
+            log.info("sukebei view %s failed: %s", tid, exc)
+            return []
+        return parse_sukebei_view(text) if status == 200 else []
+
+    async def _fill_sukebei_images(self, src: MagnetSource, fetcher: Fetcher, limit: int = 30) -> None:
+        """之前入池时还没取图的 (旧数据), 每次爬取顺带补一批."""
+        for r in self.repo.resources_missing_images("sukebei", src.id, limit):
+            assert r.id is not None
+            images = await self._sukebei_images(fetcher, r.tid)
+            self.repo.set_resource_images(r.id, images)
+            if images:
+                self._prefetch(images[0], _SUKEBEI_REFERER)
+
+    async def _intake_sukebei(self, src: MagnetSource, items: list[SukebeiItem], fetcher: Fetcher) -> int:
         assert src.id is not None
         p = src.params
         added = 0
@@ -780,11 +802,15 @@ class Service:
             ):
                 self.repo.mark_seen(src.id, str(item.id))
                 continue
+            images = await self._sukebei_images(fetcher, item.id)
             self._pool(src, Resource(
                 source="sukebei", tid=item.id, forum_id=0, forum_name="sukebei", type_name=src.name, title=cand.title,
                 number=number, magnet=cand.magnet, info_hash=cand.info_hash, size=cand.size, posted=cand.published,
                 seeders=cand.seeders, subtitle=Tag.SUBTITLE in tags, tags=tags, brackets=brackets(cand.title), source_id=src.id,
+                images=images,
             ))
+            if images:
+                self._prefetch(images[0], _SUKEBEI_REFERER)
             added += 1
         return added
 

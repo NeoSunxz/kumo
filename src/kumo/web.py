@@ -77,8 +77,13 @@ def _poster(release: Any = None, work: Any = None, magnets: Any = ()) -> tuple[s
     """
     if work is not None and work.poster:
         return f"/img/amane?u={quote(work.poster, safe='')}&w=320", False
-    url = _cover(release, None, magnets)
-    return url, bool(url)
+    if release is not None and release.cover:
+        return _cover(release), True
+    for m in magnets:
+        if m.images:
+            # sukebei 发布者贴的多是竖版封面; 98堂帖子的第一张是横版的封面 + 背面
+            return f"/img/res/{m.id}/0", m.source == "sehuatang"
+    return "", False
 
 
 _TEMPLATES.env.globals["cover"] = _cover
@@ -696,9 +701,8 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
         if res is None or not 0 <= index < len(res.images):
             raise HTTPException(404)
         try:
-            path = await request.app.state.images.get_with_referer(
-                res.images[index], s.settings.crawl_base_url.rstrip("/") + "/", proxy=s.settings.scrape_proxy
-            )
+            referer = s.settings.crawl_base_url.rstrip("/") + "/" if res.source == "sehuatang" else "https://sukebei.nyaa.si/"
+            path = await request.app.state.images.get_with_referer(res.images[index], referer, proxy=s.settings.scrape_proxy)
         except ImageError as exc:
             raise HTTPException(404, str(exc)) from exc
         return FileResponse(path, headers={"Cache-Control": "public, max-age=2592000"})
