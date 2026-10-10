@@ -112,7 +112,7 @@ class Settings(BaseModel):
     amane_interval_minutes: float = Field(default=30.0, ge=5)
     amane_refresh_days: float = Field(default=7.0, ge=1)
     """已查过的番号多久后再查一次 (Amane 里可能刚刮削完)."""
-    amane_auto_scrape: bool = True
+    amane_auto_scrape: bool = False
     """Amane 里没有的作品自动让 Amane 刮削: 下载队列里的优先, 其次是待挑选的."""
     amane_scrape_per_run: int = Field(default=30, ge=0, le=500)
     """每个同步间隔内最多提交多少个刮削任务 (订阅回填时作品很多, 免得一次塞满 Amane 的队列); 进程重启不会重新计数."""

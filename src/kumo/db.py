@@ -735,6 +735,11 @@ class Repo:
                 (number, checked_at, time.time()),
             )
 
+    def clear_scrape_requests(self) -> int:
+        """清除「已让 Amane 刮削」的记录 (Amane 那边取消了任务时用); Amane 里已经有的不受影响."""
+        with self._tx() as c:
+            return c.execute("UPDATE amane_work SET scrape_requested_at = NULL WHERE found = 0 AND scrape_requested_at IS NOT NULL").rowcount
+
     def scrapes_since(self, since: float) -> int:
         """``since`` 之后让 Amane 刮削的数量 (限速用, 进程重启也算数)."""
         row = self._one("SELECT COUNT(*) AS n FROM amane_work WHERE scrape_requested_at >= ?", (since,))

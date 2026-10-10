@@ -238,6 +238,12 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
             return back(_with_flash(back_to, "已保存"))
         return page(request, "settings.html", s=settings, sites=SEARCH_SOURCES, message="已保存")
 
+    @app.post("/settings/amane-clear-scrapes")
+    async def amane_clear_scrapes(request: Request) -> RedirectResponse:
+        n = svc(request).repo.clear_scrape_requests()
+        svc(request).repo.log("info", f"清除让 Amane 刮削的记录 {n} 条")
+        return back(_with_flash("/settings#amane", f"已清除 {n} 条提交记录, 这些作品可以重新提交刮削"))
+
     @app.post("/settings/amane-test")
     async def amane_test(request: Request) -> RedirectResponse:
         """用已保存的地址与 token 测试 Amane; 结果显示在设置页顶部."""

@@ -72,7 +72,8 @@ class FakeAmane:
 @pytest.fixture
 def amane(service: Service, monkeypatch: pytest.MonkeyPatch) -> FakeAmane:
     fake = FakeAmane()
-    service.repo.save_settings(Settings(app_id="test", download_path="/云下载", amane_url="http://amane:8000", amane_token="tk"))
+    service.repo.save_settings(Settings(app_id="test", download_path="/云下载", amane_url="http://amane:8000", amane_token="tk",
+                                        amane_auto_scrape=True))
     monkeypatch.setattr(Service, "amane", lambda self: fake.client() if self.settings.amane_url else None)
     return fake
 
@@ -255,7 +256,7 @@ def test_work_page_without_amane(service: Service, tmp_path: Path) -> None:
 
 
 async def test_auto_scrape_respects_limit_switch_and_handled(service: Service, amane: FakeAmane) -> None:
-    service.repo.save_settings(Settings(app_id="test", amane_url="http://amane:8000", amane_token="tk", amane_scrape_per_run=1))
+    service.repo.save_settings(Settings(app_id="test", amane_url="http://amane:8000", amane_token="tk", amane_scrape_per_run=1, amane_auto_scrape=True))
     service.add_numbers(["QQQ-200"])
     service.repo.add_resource(Resource(source="sukebei", tid=2, forum_id=0, forum_name="", type_name="", title="XYZ-300", number="XYZ-300",
                                        magnet="magnet:?xt=urn:btih:" + "b" * 40, info_hash="b" * 40))
@@ -295,7 +296,7 @@ async def test_manual_scrape_from_work_page(service: Service, amane: FakeAmane, 
 
 async def test_scrape_budget_survives_restart(service: Service, amane: FakeAmane, repo: object) -> None:
     """热加载 / 重启后马上又跑一轮, 也不能超过一个同步间隔的上限."""
-    service.repo.save_settings(Settings(app_id="test", amane_url="http://amane:8000", amane_token="tk", amane_scrape_per_run=2))
+    service.repo.save_settings(Settings(app_id="test", amane_url="http://amane:8000", amane_token="tk", amane_scrape_per_run=2, amane_auto_scrape=True))
     service.add_numbers(["R-001", "R-002", "R-003", "R-004"])
     await service.run_amane()
     assert len(amane.scraped) == 2
@@ -306,3 +307,12 @@ async def test_scrape_budget_survives_restart(service: Service, amane: FakeAmane
     service.repo._conn.execute("UPDATE amane_work SET scrape_requested_at = scrape_requested_at - 3600")
     await restarted.run_amane()
     assert len(amane.scraped) == 4
+
+
+def test_clear_scrape_requests(service: Service, amane: FakeAmane, tmp_path: Path) -> None:
+    service.repo.mark_scrape_requested("R-100", time.time())
+    service.repo.save_work(Work(number="R-101", found=True, title="t"))
+    with TestClient(create_app(Env(data_dir=tmp_path, password=""), service=service)) as c:
+        r = c.post("/settings/amane-clear-scrapes", follow_redirects=False)
+        assert "1" in r.headers["location"]
+    assert service.repo.scrape_status("R-100") == (False, None)
