@@ -96,6 +96,14 @@
       <button formaction="/sources/{{ src.id }}/preview" title="用当前 (含没保存的修改) 条件试爬第一页; 不保存">预览</button><span class="spacer"></span>
       <button class="danger sm" formaction="/sources/{{ src.id }}/delete" onclick="return confirm('删除「{{ src.name }}」？已入池的磁力保留')">删除订阅</button></div>
   </form>
+  {% if src.kind != 'rss' %}
+  <form method="post" action="/sources/{{ src.id }}/backfill" class="bar" style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line)">
+    <b>回填</b><span class="muted small">把</span>
+    第 <input type="number" name="start" value="1" min="1" style="width:80px"> 到 <input type="number" name="end" value="5" min="1" style="width:80px"> 页
+    <button>爬一遍</button>
+    <span class="faint small">{% if pages.get(src.id) %}共 {{ pages[src.id] }} 页；{% endif %}定时爬取只看最新的几页，补旧帖用这里（按已保存的条件）</span>
+  </form>
+  {% endif %}
 </div>
 {% endfor %}
 
@@ -117,8 +125,10 @@
       {% for x in src.filter.summary() %}<span class="tag hl">{{ x }}</span>{% else %}<span class="faint small">全部入池</span>{% endfor %}
     </div>
     {% if src.last_error %}<div class="bad small" title="{{ src.last_error }}">⚠ {{ src.last_error|truncate(36) }}</div>{% endif %}
+    {% if backfilling.get(src.id) %}<div class="small"><span class="dot live"></span>回填中 第 {{ backfilling[src.id][0] }} / {{ backfilling[src.id][1] }} 页</div>{% endif %}
     <div class="foot">
       <a class="small muted" href="/resources?src={{ src.id }}" title="查看入池的磁力">入池 <b class="num">{{ src.found }}</b></a>
+      {% if pages.get(src.id) %}<span class="faint small" title="来源的总页数 (预览或爬取时更新)">共 {{ pages[src.id] }} 页</span>{% endif %}
       <span class="faint small" title="最近爬取">{{ src.last_run|ts }}</span>
       <span class="spacer"></span>
       <a class="btn sm ghost" href="/works?origin=magnet&src={{ src.id }}" title="挑选这条订阅的作品">挑选</a>

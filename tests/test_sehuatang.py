@@ -492,3 +492,21 @@ async def test_crawl_prefetches_cover(service: Service, forum: type[FakeForum]) 
     await service.run_crawl()
     await asyncio.gather(*service._prefetching)
     assert fetched == [("https://img.example/c.jpg", "https://www.sehuatang.net/")]
+
+
+def test_parse_total_pages() -> None:
+    from kumo.sehuatang import parse_total_pages
+
+    assert parse_total_pages(fixture_text("sehuatang_forum_103.html")) == 1513
+    assert parse_total_pages("<html>没有分页</html>") == 1
+
+
+async def test_forum_backfill_crawls_given_pages_without_stopping(service: Service, forum: type[FakeForum]) -> None:
+    src = forum_source(service)
+    forum.pages[103] = [[ref(1, "AAA-001")], [ref(2, "AAA-002")], [ref(3, "AAA-003")], [ref(4, "AAA-004")]]
+    for tid in (1, 2, 3, 4):
+        forum.details[tid] = detail(tid, f"AAA-00{tid}")
+    service.repo.add_resource(Resource(source="sehuatang", tid=2, forum_id=103, forum_name="", type_name="", title="AAA-002"))
+    await service.backfill(src.id or 0, 2, 4)  # 第 2 页的帖子已入池, 回填不在这里停
+    assert forum.page_calls == [(103, 2), (103, 3), (103, 4)]
+    assert sorted(r.tid for r in service.repo.resources()) == [2, 3, 4]

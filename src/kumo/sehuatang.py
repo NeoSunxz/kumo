@@ -31,6 +31,7 @@ _SIZE = re.compile(r"【影片容量】\s*[:：]\s*([\d.]+\s*[KMGT]i?B?)", re.I)
 _CENSORED = re.compile(r"【是否有码】\s*[:：]\s*([^\s<【]+)")
 _IMG = re.compile(r"<img\b[^>]*>", re.I)
 _IMG_ATTR = re.compile(r'\b(?:zoomfile|file|src)="(https?://[^"]+)"', re.I)
+_TOTAL_PAGES = re.compile(r'<span title="共 (\d+) 页">')
 _POSTED = re.compile(r'发表于 <span title="([^"]+)"|发表于 ([0-9]{4}-[0-9-]+ [0-9:]+)')
 
 
@@ -85,6 +86,12 @@ def parse_forum(text: str) -> tuple[str, list[ThreadRef]]:
     return (name.group(1).strip() if name else ""), threads
 
 
+def parse_total_pages(text: str) -> int:
+    """板块列表的总页数 (页面上「共 N 页」); 只有一页时没有分页条."""
+    m = _TOTAL_PAGES.search(text)
+    return int(m.group(1)) if m else 1
+
+
 def parse_thread(tid: int, text: str) -> ThreadDetail:
     subject = _SUBJECT.search(text)
     body_match = _FIRST_POST.search(text)
@@ -126,6 +133,7 @@ class Sehuatang:
         host = urlsplit(self.base).hostname or ""
         # Cookie 写到主域上, www. 与裸域都能用.
         self._cookie_domain = "." + host.removeprefix("www.")
+        self.last_total: int | None = None
 
     async def _get(self, fetcher: Fetcher, path: str) -> str:
         url = f"{self.base}/{path}"
@@ -143,7 +151,10 @@ class Sehuatang:
     async def forum_page(
         self, fetcher: Fetcher, fid: int, page: int, typeid: int | None = None
     ) -> tuple[str, list[ThreadRef]]:
-        return parse_forum(await self._get(fetcher, forum_path(fid, page, typeid)))
+        """一页帖子; 板块总页数记在 ``last_total``."""
+        text = await self._get(fetcher, forum_path(fid, page, typeid))
+        self.last_total = parse_total_pages(text)
+        return parse_forum(text)
 
     def thread_url(self, tid: int) -> str:
         return f"{self.base}/thread-{tid}-1-1.html"

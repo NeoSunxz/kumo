@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import urllib.parse
 from pathlib import Path
 
 import httpx
@@ -31,6 +32,19 @@ def rss(*items: tuple[int, str, int, str, bool]) -> str:
         for tid, title, seeders, size, trusted in items
     )
     return f'<rss xmlns:nyaa="https://sukebei.nyaa.si/xmlns/nyaa" version="2.0"><channel>{body}</channel></rss>'
+
+
+def html_list(*items: tuple[int, str, int, str, bool], pages: int = 1) -> str:
+    """(种子编号, 标题, 做种, 大小, 可信) → sukebei 网页版列表 (翻页用)."""
+    rows = "".join(
+        f"""<tr class="{'success' if trusted else 'default'}"><td colspan="2"><a href="/view/{tid}" title="{title}">{title}</a></td>
+        <td class="text-center"><a href="magnet:?xt=urn:btih:{tid:040x}&amp;dn=x"></a></td>
+        <td class="text-center">{size}</td><td class="text-center" data-timestamp="1790907606">2026-10-02 02:20</td>
+        <td class="text-center">{seeders}</td><td class="text-center">0</td><td class="text-center">1</td></tr>"""
+        for tid, title, seeders, size, trusted in items
+    )
+    pager = "".join(f'<li><a href="/?q=x&p={p}">{p}</a></li>' for p in range(2, pages + 1))
+    return f'<table><tbody>{rows}</tbody></table><ul class="pagination">{pager}</ul>'
 
 
 @pytest.fixture
@@ -336,13 +350,15 @@ def test_old_database_gets_pool_columns_and_tags(tmp_path: Path) -> None:
 
 async def test_sukebei_preview_explains_each_item(service: Service, sukebei: dict[str, str]) -> None:
     src = source(service, query="x", trusted_only=True, min_seeders=3, filter=SourceFilter(tags_any=["subtitle"]))
-    sukebei[Sukebei.rss_url(query="x", category="2_2", trusted_only=True)] = rss(
+    sukebei[Sukebei.list_url(query="x", category="2_2", trusted_only=True)] = html_list(
         (1, "ABC-001 中文字幕", 5, "5.0 GiB", True),
         (2, "ABC-002 中文字幕", 1, "5.0 GiB", True),
         (3, "ABC-003 中文字幕", 9, "5.0 GiB", False),
         (4, "ABC-004", 9, "5.0 GiB", True),
+        pages=7,
     )
     rows = await service.preview_source(src)
+    assert rows.total == 7 and service.source_pages(src.id or 0) == 7
     assert [r.reason for r in rows] == ["", "做种不足 3", "上传者不可信", "没有中字"]
     assert rows[0].seeders == 5 and rows[0].size == 5 * GiB
     assert service.repo.resources() == []
@@ -476,6 +492,7 @@ def test_release_group_marks(title: str, expected: set[str]) -> None:
 async def test_source_extra_tags_count_for_filter_and_choice(service: Service, sukebei: dict[str, str]) -> None:
     src = source(service, query="fhdc", extra_tags=["subtitle", "leak"], filter=SourceFilter(tags_all=["subtitle", "leak"]))
     sukebei[Sukebei.rss_url(query="fhdc", category="2_2")] = rss((401, "ABC-401 標題", 9, "5.0 GiB", True))
+    sukebei[Sukebei.list_url(query="fhdc", category="2_2")] = html_list((401, "ABC-401 標題", 9, "5.0 GiB", True))
     assert [r.reason for r in await service.preview_source(src)] == [""]
     await service.run_sukebei()
     (r,) = service.repo.resources()
@@ -516,3 +533,43 @@ def test_tag_rule_change_clears_seen(tmp_path: Path) -> None:
     repo.mark_seen(src.id or 0, "1")
     repo.set_kv("tag_rules", "old")
     assert not Repo(tmp_path / "k.db").is_seen(src.id or 0, "1")
+
+
+
+def test_parse_sukebei_html_fixture() -> None:
+    from kumo.magnets import parse_sukebei_html
+
+    items, total = parse_sukebei_html(fixture_text("sukebei_list_FHDC_UN_p2.html"))
+    assert len(items) == 75 and total == 14
+    first = items[0]
+    assert first.id == 4726897 and first.candidate.title.startswith("[FHDC][UN]JUR-838")
+    assert first.candidate.info_hash == "de3774f6548d1b458e1881f59eee142a75b8e959" and first.candidate.size == 2 * GiB
+    assert first.candidate.seeders == 3 and first.candidate.published == "Fri, 02 Oct 2026 02:20:06 GMT"
+
+
+async def test_sukebei_backfill_pages(service: Service, sukebei: dict[str, str]) -> None:
+    src = source(service, query="x")
+    for p in (2, 3):
+        sukebei[Sukebei.list_url(query="x", category="2_2", page=p)] = html_list((600 + p, f"ABC-{600 + p}", 9, "5.0 GiB", True), pages=9)
+    await service.backfill(src.id or 0, 2, 3)
+    assert sorted(r.tid for r in service.repo.resources()) == [602, 603]
+    assert service.backfilling == {} and service.source_pages(src.id or 0) == 9
+
+
+def test_backfill_form_validation(service: Service, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    src = source(service, query="x")
+    service.repo.set_kv(f"source_pages:{src.id}", "9")
+    started: list[tuple[int, int, int]] = []
+
+    async def fake_backfill(source_id: int, start: int, end: int) -> None:
+        started.append((source_id, start, end))
+
+    monkeypatch.setattr(service, "backfill", fake_backfill)
+    with TestClient(create_app(Env(data_dir=tmp_path, password=""), service=service)) as c:
+        assert "共 9 页" in c.get("/sources").text
+        def go(start: str, end: str) -> str:
+            r = c.post(f"/sources/{src.id}/backfill", data={"start": start, "end": end}, follow_redirects=False)
+            return urllib.parse.unquote_plus(r.headers["location"])
+        assert "从小到大" in go("5", "2") and "最多 9 页" in go("2", "12")
+        assert "开始回填" in go("2", "4")
+    assert started == [(src.id, 2, 4)]

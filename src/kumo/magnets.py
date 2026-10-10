@@ -13,6 +13,7 @@ import secrets
 import xml.etree.ElementTree as ET
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from email.utils import formatdate
 from urllib.parse import quote, urlencode, urlsplit
 
 import httpx
@@ -133,6 +134,16 @@ class Sukebei(MagnetSite):
             params["u"] = user
         return f"{cls.base}/?{urlencode(params)}"
 
+    @classmethod
+    def list_url(cls, *, query: str = "", user: str = "", category: str = "0_0", trusted_only: bool = False, page: int = 1) -> str:
+        """网页版列表: RSS 不能翻页 (只给最新 75 条), 翻页与总页数要看网页版."""
+        params = {"q": query, "c": category or "0_0", "f": "2" if trusted_only else "0"}
+        if user:
+            params["u"] = user
+        if page > 1:
+            params["p"] = str(page)
+        return f"{cls.base}/?{urlencode(params)}"
+
     async def search(self, fetcher: Fetcher, number: str) -> list[Candidate]:
         status, text = await fetcher.get_text(self.rss_url(query=number))
         if status != 200:
@@ -182,6 +193,42 @@ def parse_sukebei_items(text: str) -> list[SukebeiItem]:
             )
         )
     return out
+
+
+_NYAA_ROW = re.compile(r'<tr class="(default|success|danger)">(.*?)</tr>', re.S)
+_NYAA_ROW_VIEW = re.compile(r'<a href="/view/(\d+)" title="([^"]+)"')
+_NYAA_ROW_MAGNET = re.compile(r'href="(magnet:\?xt=urn:btih:[^"]+)"')
+_NYAA_ROW_CELLS = re.compile(r'<td class="text-center"(?: data-timestamp="(\d+)")?>([^<]*)</td>')
+_NYAA_PAGES = re.compile(r'[?&]p=(\d+)"')
+
+
+def parse_sukebei_html(text: str) -> tuple[list[SukebeiItem], int]:
+    """网页版列表页: (条目, 总页数). 行的 class: success 是可信上传者, danger 是 remake."""
+    items: list[SukebeiItem] = []
+    for kind, row in _NYAA_ROW.findall(text):
+        view, magnet = _NYAA_ROW_VIEW.search(row), _NYAA_ROW_MAGNET.search(row)
+        if not view or not magnet:
+            continue
+        title, link = html.unescape(view.group(2)).strip(), html.unescape(magnet.group(1))
+        info_hash = info_hash_of(link)
+        if not info_hash:
+            continue
+        cells = _NYAA_ROW_CELLS.findall(row)
+        size = parse_size(cells[0][1]) if cells else None
+        stamp = next((int(ts) for ts, _ in cells if ts), None)
+        numbers = [v for ts, v in cells[2:] if not ts and v.strip().isdigit()]
+        items.append(SukebeiItem(
+            id=int(view.group(1)),
+            candidate=Candidate(
+                site="sukebei", title=title, magnet=f"magnet:?xt=urn:btih:{info_hash}&dn={quote(title)}", info_hash=info_hash,
+                size=size, seeders=int(numbers[0]) if numbers else None,
+                published=formatdate(stamp, usegmt=True) if stamp else None,
+            ),
+            category="", trusted=kind == "success",
+        ))
+    pages = [int(p) for p in _NYAA_PAGES.findall(text)]
+    current = re.search(r'<li class="active"><a>(\d+)</a>', text)
+    return items, max(pages + ([int(current.group(1))] if current else []) + [1])
 
 
 def parse_sukebei_rss(text: str) -> list[Candidate]:

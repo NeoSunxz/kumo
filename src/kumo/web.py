@@ -366,7 +366,11 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
     @app.get("/sources", response_class=HTMLResponse)
     async def sources(request: Request) -> HTMLResponse:
         s = svc(request)
-        return page(request, "sources.html", sources=s.repo.sources(), settings=s.settings, base=str(request.base_url))
+        sources = s.repo.sources()
+        return page(
+            request, "sources.html", sources=sources, settings=s.settings, base=str(request.base_url),
+            pages={src.id: s.source_pages(src.id) for src in sources if src.id}, backfilling=s.backfilling,
+        )
 
     @app.post("/sources")
     async def add_source(request: Request) -> RedirectResponse:
@@ -395,7 +399,8 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
             raise HTTPException(404)
         form = await request.form()
         if "kind" not in form:
-            return await _preview(request, src)  # 列表上的「预览」: 按已保存的条件
+            # 列表上的「预览」与预览页翻页: 按已保存的条件
+            return await _preview(request, src, max(_opt_int(str(form.get("page") or "")) or 1, 1))
         try:
             new = _source_from_form(form, src)
         except ValueError as exc:
@@ -403,12 +408,41 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
         new.id = source_id
         return await _preview(request, new)
 
-    async def _preview(request: Request, src: MagnetSource) -> HTMLResponse:
+    async def _preview(request: Request, src: MagnetSource, page_no: int = 1) -> HTMLResponse:
+        s = svc(request)
         try:
-            rows, error = await svc(request).preview_source(src), ""
+            rows, error = await s.preview_source(src, page_no), ""
         except SiteError as exc:
             rows, error = [], str(exc)
-        return page(request, "source_preview.html", src=src, rows=rows, error=error)
+        total = getattr(rows, "total", None) or (s.source_pages(src.id) if src.id else None)
+        return page(request, "source_preview.html", src=src, rows=rows, error=error, page_no=page_no, total=total,
+                    backfilling=s.backfilling.get(src.id or 0))
+
+    @app.post("/sources/{source_id}/backfill")
+    async def backfill_source(request: Request, source_id: int) -> RedirectResponse:
+        """回填: 把第 start 到 end 页都爬一遍 (后台运行, 卡片上显示进度)."""
+        s = svc(request)
+        src = s.repo.source(source_id)
+        if src is None:
+            raise HTTPException(404)
+        form = await request.form()
+        start, end = _opt_int(str(form.get("start") or "")), _opt_int(str(form.get("end") or ""))
+        total = s.source_pages(source_id)
+        job = {"sehuatang": "crawl", "sukebei": "sukebei"}.get(src.kind)
+        if job is None:
+            message = "RSS 没有页码, 不能回填"
+        elif not start or not end or start > end:
+            message = "页码要从小到大, 如 2 到 10"
+        elif total and end > total:
+            message = f"最多 {total} 页"
+        elif end - start >= _BACKFILL_MAX:
+            message = f"一次最多回填 {_BACKFILL_MAX} 页, 分几次来"
+        elif job in s.running or source_id in s.backfilling:
+            message = f"{JOB_LABELS[job]}正在运行, 稍后再试"
+        else:
+            asyncio.create_task(s.run_guarded(job, lambda: s.backfill(source_id, start, end)))
+            message = f"开始回填「{src.name}」第 {start}~{end} 页, 在后台运行, 卡片上显示进度"
+        return back(_with_flash(f"/sources#src-{source_id}", message))
 
     @app.post("/sources/{source_id}")
     async def edit_source(request: Request, source_id: int) -> RedirectResponse:
@@ -861,6 +895,9 @@ def _source_from_form(form: Any, src: MagnetSource) -> MagnetSource:
 
 #: 允许的缩略图宽度 (不接受任意值, 免得缓存里堆满各种尺寸).
 _THUMB_WIDTHS = (240, 320, 480)
+
+#: 一次回填最多几页 (98堂每页要打开几十个帖子, 一页约半分钟到一分钟).
+_BACKFILL_MAX = 100
 
 #: 挑选作品每次多显示的数量.
 _PAGE = 120

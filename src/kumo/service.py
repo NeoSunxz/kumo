@@ -34,7 +34,7 @@ from .amane import Amane, AmaneDetail, AmaneError, AmaneStream
 from .db import Repo
 from .images import ImageCache, ImageError
 from .feeds import parse_feed, torrent_to_magnet
-from .magnets import SITES, Fetcher, SiteError, Sukebei, parse_sukebei_items
+from .magnets import SITES, Fetcher, SiteError, Sukebei, SukebeiItem, parse_sukebei_html, parse_sukebei_items
 from .models import (
     AmaneActor, Candidate, LibraryFile, MagnetSource, Release, Resource, SourceFilter, Subscription, Tag, Wanted,
     WantedStatus, Work, info_hash_of,
@@ -72,6 +72,8 @@ class Service:
         self._prefetching: set[asyncio.Task[None]] = set()
         self._detail_cache: dict[int, tuple[float, AmaneDetail]] = {}
         self._stream_cache: dict[int, tuple[float, list[AmaneStream]]] = {}
+        self.backfilling: dict[int, tuple[int, int]] = {}
+        """正在回填的订阅: 编号 → (当前页, 最后一页)."""
         self._migrate_sources()
 
     def _migrate_sources(self) -> None:
@@ -625,16 +627,21 @@ class Service:
             site = Sehuatang(self.settings.crawl_base_url)
             await self._run_sources("sehuatang", source_id, lambda src, f: self._crawl_forum(site, src, f))
 
-    async def _crawl_forum(self, site: Sehuatang, src: MagnetSource, fetcher: Fetcher) -> int:
-        """按发帖时间翻页; 列表标题不符合入池条件的不打开帖子, 遇到已见过的帖子即停止翻页."""
+    async def _crawl_forum(self, site: Sehuatang, src: MagnetSource, fetcher: Fetcher, pages: range | None = None) -> int:
+        """按发帖时间翻页; 列表标题不符合入池条件的不打开帖子.
+
+        ``pages`` 为空是增量: 从第 1 页起, 遇到已见过的帖子即停 (最多翻设置的页数); 给了就是回填, 把这些页都翻一遍.
+        """
         assert src.id is not None
         s = self.settings
         fid, typeid = int(src.params["fid"]), src.params.get("typeid")  # type: ignore[arg-type]
         added = 0
-        for page in range(1, s.crawl_pages + 1):
-            if page > 1:
+        for i, page in enumerate(pages or range(1, s.crawl_pages + 1)):
+            if i:
                 await asyncio.sleep(s.crawl_request_delay)
+            self._progress(src, page, pages)
             forum_name, refs = await site.forum_page(fetcher, fid, page, int(typeid) if typeid else None)  # type: ignore[arg-type]
+            self._remember_pages(src, getattr(site, "last_total", None))
             known = 0
             for ref in refs:
                 key = str(ref.tid)
@@ -667,9 +674,42 @@ class Service:
                 if detail.images:
                     self._prefetch(detail.images[0])
                 added += 1
-            if known or not refs:
+            if not refs or (pages is None and known):
                 break
         return added
+
+    def _progress(self, src: MagnetSource, page: int, pages: range | None) -> None:
+        if pages is not None and src.id is not None:
+            self.backfilling[src.id] = (page, pages.stop - 1)
+
+    def _remember_pages(self, src: MagnetSource, total: int | None) -> None:
+        """记下来源的总页数, 订阅卡片与预览上显示."""
+        if total and src.id is not None:
+            self.repo.set_kv(f"source_pages:{src.id}", str(total))
+
+    def source_pages(self, source_id: int) -> int | None:
+        value = self.repo.get_kv(f"source_pages:{source_id}")
+        return int(value) if value else None
+
+    async def backfill(self, source_id: int, start: int, end: int) -> None:
+        """回填: 把订阅的第 start 到 end 页都爬一遍 (不在见过的帖子处停), 进度记在 ``backfilling``."""
+        src = self.repo.source(source_id)
+        if src is None or src.kind not in ("sehuatang", "sukebei"):
+            return
+        pages = range(start, end + 1)
+        job = "crawl" if src.kind == "sehuatang" else "sukebei"
+        async with self._locks[job]:
+            s = self.settings
+            fetcher = Fetcher(proxy=s.scrape_proxy, flaresolverr_url=s.flaresolverr_url)
+            try:
+                if src.kind == "sehuatang":
+                    added = await self._crawl_forum(Sehuatang(s.crawl_base_url), src, fetcher, pages)
+                else:
+                    added = await self._crawl_sukebei(src, fetcher, pages)
+                self.repo.log("info", f"磁力订阅 {src.name}: 回填第 {start}~{end} 页, 新入池 {added} 个")
+            finally:
+                await fetcher.aclose()
+                self.backfilling.pop(source_id, None)
 
     def _prefetch(self, url: str) -> None:
         """后台取回帖子的封面放进缓存; 失败不要紧, 打开页面时还会再取."""
@@ -692,18 +732,41 @@ class Service:
         async with self._locks["sukebei"]:
             await self._run_sources("sukebei", source_id, self._crawl_sukebei)
 
-    async def _crawl_sukebei(self, src: MagnetSource, fetcher: Fetcher) -> int:
-        assert src.id is not None
+    async def _sukebei_page(self, src: MagnetSource, fetcher: Fetcher, page: int | None) -> list[SukebeiItem]:
+        """``page`` 为空读 RSS (最新 75 条, 增量用); 给了页码读网页版 (RSS 不能翻页), 顺带记下总页数."""
         p = src.params
-        url = Sukebei.rss_url(
+        kw = dict(
             query=str(p.get("query") or ""), user=str(p.get("user") or ""), category=str(p.get("category") or "2_2"),
             trusted_only=bool(p.get("trusted_only")),
         )
+        url = Sukebei.rss_url(**kw) if page is None else Sukebei.list_url(**kw, page=page)  # type: ignore[arg-type]
         status, text = await fetcher.get_text(url)
         if status != 200:
             raise SiteError(f"sukebei 返回 HTTP {status}")
+        if page is None:
+            return parse_sukebei_items(text)
+        items, total = parse_sukebei_html(text)
+        self._remember_pages(src, total)
+        return items
+
+    async def _crawl_sukebei(self, src: MagnetSource, fetcher: Fetcher, pages: range | None = None) -> int:
+        """``pages`` 为空是增量 (RSS 最新 75 条), 给了就是回填这些页."""
+        assert src.id is not None
+        p = src.params
         added = 0
-        for item in parse_sukebei_items(text):
+        for i, page in enumerate(pages or [None]):
+            if i:
+                await asyncio.sleep(self.settings.crawl_request_delay)
+            if page is not None:
+                self._progress(src, page, pages)
+            added += self._intake_sukebei(src, await self._sukebei_page(src, fetcher, page))
+        return added
+
+    def _intake_sukebei(self, src: MagnetSource, items: list[SukebeiItem]) -> int:
+        assert src.id is not None
+        p = src.params
+        added = 0
+        for item in items:
             cand = item.candidate
             if self.repo.resource_exists("sukebei", item.id) or self.repo.is_seen(src.id, str(item.id)):
                 continue
@@ -766,17 +829,20 @@ class Service:
                 added += 1
         return added
 
-    async def preview_source(self, src: MagnetSource) -> list[PreviewRow]:
-        """试爬第一页: 列出每条识别出的番号、标签、片头, 以及是否入池与原因; 不入库, 也不打开论坛帖子."""
+    async def preview_source(self, src: MagnetSource, page: int = 1) -> PreviewRows:
+        """试爬一页: 列出每条识别出的番号、标签、片头, 以及是否入池与原因; 不入库, 也不打开论坛帖子.
+        结果带上来源的总页数 (回填时选页码用)."""
         s = self.settings
-        rows: list[PreviewRow] = []
+        rows = PreviewRows(page=page)
         fetcher = Fetcher(proxy=s.scrape_proxy, flaresolverr_url=s.flaresolverr_url)
         try:
             if src.kind == "sehuatang":
                 typeid = src.params.get("typeid")
-                forum_name, refs = await Sehuatang(s.crawl_base_url).forum_page(
-                    fetcher, int(src.params["fid"]), 1, int(typeid) if typeid else None  # type: ignore[arg-type]
+                site = Sehuatang(s.crawl_base_url)
+                forum_name, refs = await site.forum_page(
+                    fetcher, int(src.params["fid"]), page, int(typeid) if typeid else None  # type: ignore[arg-type]
                 )
+                rows.total = getattr(site, "last_total", None)
                 for ref in refs:
                     row = self._preview_row(
                         src, ref.title, ref.type_name, known=self.repo.resource_exists("sehuatang", ref.tid), forum_name=forum_name,
@@ -785,14 +851,15 @@ class Service:
                     rows.append(row)
             elif src.kind == "sukebei":
                 p = src.params
-                url = Sukebei.rss_url(
+                url = Sukebei.list_url(
                     query=str(p.get("query") or ""), user=str(p.get("user") or ""),
-                    category=str(p.get("category") or "2_2"), trusted_only=bool(p.get("trusted_only")),
+                    category=str(p.get("category") or "2_2"), trusted_only=bool(p.get("trusted_only")), page=page,
                 )
                 status, text = await fetcher.get_text(url)
                 if status != 200:
                     raise SiteError(f"sukebei 返回 HTTP {status}")
-                for item in parse_sukebei_items(text):
+                items, rows.total = parse_sukebei_html(text)
+                for item in items:
                     cand = item.candidate
                     row = self._preview_row(src, cand.title, known=self.repo.resource_exists("sukebei", item.id))
                     row.size, row.seeders, row.date = cand.size, cand.seeders, day(cand.published)
@@ -814,6 +881,7 @@ class Service:
                     rows.append(row)
         finally:
             await fetcher.aclose()
+        self._remember_pages(src, rows.total)
         return rows
 
     def _preview_row(
@@ -1066,6 +1134,15 @@ class WorkDetail:
             if r is not None:
                 out += [(f"/img/res/{r.id}/{i}", u) for i, u in enumerate(r.images)]
         return out[:24]
+
+
+class PreviewRows(list["PreviewRow"]):
+    """预览的一页, 带页码与来源的总页数."""
+
+    def __init__(self, page: int = 1) -> None:
+        super().__init__()
+        self.page = page
+        self.total: int | None = None
 
 
 @dataclass

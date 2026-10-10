@@ -6,9 +6,32 @@
   <div>
     <p class="lead" style="margin:0 0 4px"><a href="/sources{{ '#src-' ~ src.id if src.id }}">← 磁力订阅</a></p>
     <h1>预览：{{ src.name }} <span class="kind">{{ src.label }}</span></h1>
-    <p class="lead">{{ src.describe() }} · 第一页 {{ rows|length }} 条，<b class="ok">{{ ok|length }}</b> 条会入池 · 只是试爬，没有保存{% if src.kind == 'sehuatang' %}，也没有打开帖子（磁力、大小、图片要入池时才取）{% endif %}</p>
+    <p class="lead">{{ src.describe() }} · 第 {{ page_no }} 页{% if total %} / 共 {{ total }} 页{% endif %}，{{ rows|length }} 条，<b class="ok">{{ ok|length }}</b> 条会入池 · 只是试爬，没有保存{% if src.kind == 'sehuatang' %}，也没有打开帖子（磁力、大小、图片要入池时才取）{% endif %}</p>
   </div>
+  {% if src.id %}
+  <div class="actions">
+    {% if page_no > 1 %}<form class="inline" method="post" action="/sources/{{ src.id }}/preview"><input type="hidden" name="page" value="{{ page_no - 1 }}"><button>上一页</button></form>{% endif %}
+    <form class="inline bar" method="post" action="/sources/{{ src.id }}/preview" style="gap:4px">
+      <input type="number" name="page" value="{{ page_no }}" min="1" {% if total %}max="{{ total }}"{% endif %} style="width:80px">
+      <button>预览这一页</button></form>
+    {% if not total or page_no < total %}<form class="inline" method="post" action="/sources/{{ src.id }}/preview"><input type="hidden" name="page" value="{{ page_no + 1 }}"><button>下一页</button></form>{% endif %}
+  </div>
+  {% endif %}
 </div>
+{% if src.id and src.kind != 'rss' %}
+<div class="card">
+  {% if backfilling %}<p class="small" style="margin:0 0 8px"><span class="dot live"></span>正在回填：第 {{ backfilling[0] }} / {{ backfilling[1] }} 页</p>{% endif %}
+  <form method="post" action="/sources/{{ src.id }}/backfill" class="bar">
+    <b>回填</b><span class="muted small">按当前已保存的条件，把</span>
+    第 <input type="number" name="start" value="{{ page_no }}" min="1" {% if total %}max="{{ total }}"{% endif %} style="width:80px">
+    到 <input type="number" name="end" value="{{ [page_no + 4, total or page_no + 4]|min }}" min="1" {% if total %}max="{{ total }}"{% endif %} style="width:80px"> 页
+    <button class="primary">爬一遍</button>
+    <span class="faint small">平时的定时爬取只看最新的几页；想补旧帖就在这里回填（一次最多 100 页，98堂每页要打开几十个帖子，一页约半分钟到一分钟）</span>
+  </form>
+</div>
+{% elif not src.id %}
+<div class="alert info"><span>保存订阅后可以翻页预览、回填旧的页。</span></div>
+{% endif %}
 <div class="card">
   <div class="meta" style="display:flex;gap:6px;flex-wrap:wrap">
     {% for x in src.filter.summary() %}<span class="tag hl">{{ x }}</span>{% else %}<span class="faint small">没有入池条件，全部入池</span>{% endfor %}
