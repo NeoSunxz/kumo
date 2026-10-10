@@ -17,7 +17,7 @@ from urllib.parse import parse_qsl, quote, urlencode, urlsplit
 
 import segno
 from fastapi import FastAPI, Form, HTTPException, Query, Request, Response
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 
@@ -666,6 +666,35 @@ def create_app(env: Env | None = None, service: Service | None = None) -> FastAP
         except ImageError as exc:
             raise HTTPException(404, str(exc)) from exc
         return FileResponse(path, headers={"Cache-Control": "public, max-age=2592000"})
+
+    @app.get("/play")
+    async def play(request: Request, p: str) -> Response:
+        """转发 Amane 的播放流 (带 Range, 可拖动进度); 浏览器不用登录 Amane. 只接受作品页列出过的地址."""
+        s = svc(request)
+        if not s.stream_allowed(p):
+            raise HTTPException(404, "先打开作品页")
+        amane = s.amane()
+        if amane is None:
+            raise HTTPException(404, "未接入 Amane")
+        headers = {k: v for k, v in request.headers.items() if k.lower() in ("range", "if-range")}
+        try:
+            upstream = await amane.open_stream(p, headers)
+        except AmaneError as exc:
+            await amane.aclose()
+            raise HTTPException(502, str(exc)) from exc
+
+        async def body() -> AsyncIterator[bytes]:
+            try:
+                async for chunk in upstream.aiter_bytes(256 * 1024):
+                    yield chunk
+            finally:
+                await upstream.aclose()
+                await amane.aclose()
+
+        keep = ("content-type", "content-length", "content-range", "accept-ranges", "last-modified", "etag")
+        return StreamingResponse(
+            body(), status_code=upstream.status_code, headers={k: v for k, v in upstream.headers.items() if k.lower() in keep}
+        )
 
     @app.get("/img/amane")
     async def amane_image(request: Request, u: str, w: int | None = None) -> Response:

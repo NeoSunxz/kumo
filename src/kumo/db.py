@@ -753,28 +753,17 @@ class Repo:
             " SELECT number, 0 AS prio, updated_at AS ord FROM wanted WHERE status NOT IN ('owned', 'ignored')"
             f" UNION ALL SELECT number, 1, crawled_at FROM resource WHERE {self._PENDING}"
             f" UNION ALL SELECT number, 2, COALESCE(date, '') FROM release WHERE {self._UNHANDLED}"
-            ") AS n JOIN amane_work a ON a.number = n.number"
-            " WHERE a.found = 0 AND (a.scrape_requested_at IS NULL OR a.scrape_requested_at < ?)"
+            ") AS n LEFT JOIN amane_work a ON a.number = n.number"
+            " WHERE COALESCE(a.found, 0) = 0 AND (a.scrape_requested_at IS NULL OR a.scrape_requested_at < ?)"
             " GROUP BY n.number COLLATE NOCASE ORDER BY MIN(n.prio), MAX(n.ord) DESC LIMIT ?",
             (retry_before, limit),
         )
         return [r["number"] for r in rows]
 
-    def numbers_for_amane(self, refresh_before: float, limit: int) -> list[str]:
-        """需要去 Amane 查的番号: 从没查过或上次查询早于 ``refresh_before`` 的.
-
-        先查下载队列, 再查待确认的磁力池, 最后是作品库 (按发行日期从新到旧).
-        """
-        rows = self._all(
-            "SELECT number, MIN(prio) AS prio, MAX(ord) AS ord FROM ("
-            " SELECT number, 0 AS prio, updated_at AS ord FROM wanted"
-            f" UNION ALL SELECT number, 1, crawled_at FROM resource WHERE {self._PENDING}"
-            " UNION ALL SELECT number, 2, COALESCE(date, '') FROM release"
-            ") AS n WHERE number NOT IN (SELECT number FROM amane_work WHERE checked_at >= ?)"
-            " GROUP BY number COLLATE NOCASE ORDER BY prio, ord DESC LIMIT ?",
-            (refresh_before, limit),
-        )
-        return [r["number"] for r in rows]
+    def drop_works_not_seen_since(self, since: float) -> int:
+        """全量同步后: 这次没出现的 (Amane 里删掉了) 不再算 Amane 里有."""
+        with self._tx() as c:
+            return c.execute("DELETE FROM amane_work WHERE found = 1 AND checked_at < ?", (since,)).rowcount
 
     def amane_actor(self, name: str) -> AmaneActor | None:
         row = self._one("SELECT * FROM amane_actor WHERE name = ?", (name,))

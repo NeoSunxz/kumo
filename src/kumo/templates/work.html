@@ -67,6 +67,18 @@
   </div>
 </div>
 
+{% if d.streams %}
+<div class="card">
+  <div class="card-head"><h2>播放</h2><span class="muted small">Amane 媒体库里的文件，经 kumo 转发{% if not d.playable %}；只有 HLS 流，在 Amane 里播放{% endif %}</span></div>
+  {% if d.playable %}<video class="player" controls preload="metadata" src="/play?p={{ d.playable.href|urlencode }}"></video>{% endif %}
+  <div class="bar" style="margin-top:8px">
+    {% for st in d.streams %}<span class="tag">{{ st.name }}</span>{% endfor %}
+    <span class="spacer"></span>
+    {% if amane_url and a %}<a class="btn sm ghost" href="{{ amane_url }}/meta/{{ a.id }}" target="_blank" rel="noreferrer">在 Amane 中播放 ↗</a>{% endif %}
+  </div>
+</div>
+{% endif %}
+
 <div class="card flush">
   <div class="card-head"><h2>磁力池</h2><span class="muted small">{{ d.magnets|length }} 条 · 按 档次 › 订阅顺序 › 日期 › 分数 排列，加入下载队列时自动选第一条（各站搜到的也会一起比较）</span></div>
   <div class="scroll" style="margin-top:12px"><table>

@@ -59,11 +59,14 @@ services:
 ## 接入 Amane
 
 在设置的「Amane」里填 Amane 地址 (默认端口 8000) 与 API token (Amane 数据目录的 `token` 文件; Amane 设了 `AMANE_TOKEN=off` 时留空),
-点「测试连接」. kumo 定时按番号查 Amane 的 `/api/metadata`、按女优名查 `/api/actors`, 结果缓存在 kumo 自己的库里.
+点「测试连接」. kumo 每 5 分钟增量同步 Amane 的作品 (按最后修改时间, 通常一次请求; 每天一次全量, 顺带清掉 Amane 里删掉的),
+各页面读本地镜像; 作品页的简介、剧照、播放流实时向 Amane 取 (缓存 10 分钟). 女优头像按名字查 `/api/actors`.
+
+- 作品页可直接播放 Amane 媒体库里的文件: 「原画」mp4 流经 kumo 转发 (支持拖动), 浏览器不用登录 Amane; HLS 流到 Amane 里播放
 
 - 挑选作品用 Amane 的海报 (缩成 320 宽缓存), Amane 里还没有时用资料站封面的正面部分; 作品页主图用 Amane 的高清封面
 - Amane 里没有的作品, kumo 用 `POST /api/tasks` 让 Amane 刮削 (这是 kumo 唯一写入 Amane 的操作);
-  自动提交可在设置里关掉, 作品页上也能手动提交
+  作品页上手动提交; 自动提交默认关闭, 可在设置里打开
 - 女优头像 Amane 的优先 (多来自 gfriends, 640×896), 资料站的头像只有 100~125 像素
 
 缩图需要 Pillow, 是镜像里新加的依赖: 用热加载时改了 `pyproject.toml` 要重新构建一次; 没装时直接返回原图.

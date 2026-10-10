@@ -45,6 +45,38 @@ class AmaneDetail:
     """Amane 媒体库里关联的文件数."""
 
 
+@dataclass
+class AmaneStream:
+    name: str
+    href: str
+    """Amane 上的地址 (``/api/playback/...``)."""
+    content_type: str
+
+    @property
+    def direct(self) -> bool:
+        """整个文件 (mp4 等), 浏览器 <video> 能直接播; HLS 要 Amane 自己的播放器."""
+        return "mpegurl" not in self.content_type
+
+
+def _work_from_item(number: str, item: dict[str, Any]) -> Work:
+    posters = item.get("poster_urls") or []
+    thumbs = item.get("thumb_urls") or []
+    return Work(
+        number=number, found=True, title=item.get("title") or "", date=item.get("release"),
+        actors=list(item.get("actors") or []), studio=item.get("studio") or "",
+        poster=posters[0] if posters else None, thumb=thumbs[0] if thumbs else None,
+        amane_id=item.get("id"), file_count=int(item.get("file_count") or 0),
+    )
+
+
+def kumo_number(number: str) -> str:
+    """Amane 的番号写法转成 kumo 的 (``FC2-1234567`` → ``FC2-PPV-1234567``), 与 ``amane_number`` 相反."""
+    upper = number.upper()
+    if upper.startswith("FC2-") and not upper.startswith("FC2-PPV-") and upper[4:].isdigit():
+        return "FC2-PPV-" + number[4:]
+    return number
+
+
 def amane_number(number: str) -> str:
     """kumo 的番号写法转成 Amane 的: FC2 在 Amane 里是 ``FC2-1234567`` (没有 PPV), 其余相同."""
     return "FC2-" + number.removeprefix("FC2-PPV-") if number.upper().startswith("FC2-PPV-") else number
@@ -96,6 +128,36 @@ class Amane:
         data = await self._get("/api/metadata", {"limit": 1})
         return int(data.get("total") or 0)
 
+    async def changed_works(self, offset: int, limit: int = 200) -> tuple[list[tuple[Work, str]], int]:
+        """按最后修改时间从新到旧翻 Amane 的作品列表 (增量镜像用); 返回 ([(作品, updated_at)], 总数)."""
+        data = await self._get("/api/metadata", {"offset": offset, "limit": limit, "sort_by": "updated_at", "order": "desc"})
+        out = []
+        for item in data.get("items") or []:
+            out.append((_work_from_item(kumo_number(str(item.get("number") or "")), item), str(item.get("updated_at") or "")))
+        return out, int(data.get("total") or 0)
+
+    async def streams(self, amane_id: int) -> list[AmaneStream]:
+        """作品的播放流 (各播放源); 没有文件或播放源时为空. 探测由 Amane 的播放插件完成, 会访问网盘."""
+        out: list[AmaneStream] = []
+        for src in (await self._get("/api/playback/sources", {})).get("items") or []:
+            sid = src.get("source_id")
+            try:
+                data = await self._get(f"/api/playback/{sid}/{amane_id}/streams", {})
+            except AmaneError:
+                continue
+            for s in data.get("items") or []:
+                if s.get("available") and s.get("href"):
+                    out.append(AmaneStream(name=str(s.get("name") or ""), href=str(s["href"]), content_type=str(s.get("content_type") or "")))
+        return out
+
+    async def open_stream(self, path: str, headers: dict[str, str]) -> httpx.Response:
+        """转发播放流 (带 Range); 调用方负责读完后关闭."""
+        req = self._client.build_request("GET", path, headers=headers, timeout=httpx.Timeout(30.0, read=None))
+        try:
+            return await self._client.send(req, stream=True)
+        except httpx.HTTPError as exc:
+            raise AmaneError(f"无法访问 Amane: {type(exc).__name__}") from exc
+
     async def work(self, number: str) -> Work:
         """按番号查作品. ``/api/metadata?search=`` 是番号与标题的模糊匹配, 这里只取番号完全一致的."""
         query = amane_number(number)
@@ -103,20 +165,7 @@ class Amane:
         for item in data.get("items") or []:
             if str(item.get("number", "")).casefold() != query.casefold():
                 continue
-            posters = item.get("poster_urls") or []
-            thumbs = item.get("thumb_urls") or []
-            return Work(
-                number=number,
-                found=True,
-                title=item.get("title") or "",
-                date=item.get("release"),
-                actors=list(item.get("actors") or []),
-                studio=item.get("studio") or "",
-                poster=posters[0] if posters else None,
-                thumb=thumbs[0] if thumbs else None,
-                amane_id=item.get("id"),
-                file_count=int(item.get("file_count") or 0),
-            )
+            return _work_from_item(number, item)
         return Work(number=number, found=False)
 
     async def detail(self, amane_id: int) -> AmaneDetail:

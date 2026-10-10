@@ -30,7 +30,7 @@ from datetime import date, timedelta
 
 import httpx
 
-from .amane import Amane, AmaneDetail, AmaneError
+from .amane import Amane, AmaneDetail, AmaneError, AmaneStream
 from .db import Repo
 from .images import ImageCache, ImageError
 from .feeds import parse_feed, torrent_to_magnet
@@ -51,7 +51,6 @@ log = logging.getLogger("kumo")
 VIDEO_EXTS = frozenset({".mp4", ".mkv", ".avi", ".wmv", ".mov", ".ts", ".m2ts", ".iso", ".rmvb", ".flv", ".webm", ".m4v", ".mpg", ".mpeg"})
 _TICK = 30.0
 _SEARCH_PER_TICK = 5
-_AMANE_PER_RUN = 200
 
 
 class Service:
@@ -72,6 +71,7 @@ class Service:
         """网页的图片缓存; 设了的话, 98堂帖子入池时顺带把封面取回来, 打开页面时不用现取."""
         self._prefetching: set[asyncio.Task[None]] = set()
         self._detail_cache: dict[int, tuple[float, AmaneDetail]] = {}
+        self._stream_cache: dict[int, tuple[float, list[AmaneStream]]] = {}
         self._migrate_sources()
 
     def _migrate_sources(self) -> None:
@@ -207,7 +207,7 @@ class Service:
         release = self.repo.releases_by_numbers([key]).get(key)
         resources = self.repo.resources_for_number(number)
         work = self.repo.works([key]).get(key)
-        detail, amane_error = None, ""
+        detail, amane_error, streams = None, "", []
         amane = self.amane()
         if amane is not None:
             try:
@@ -218,6 +218,8 @@ class Service:
                     work = work if work.found else None
                 if work is not None and work.amane_id:
                     detail = await self._amane_detail(amane, work.amane_id)
+                    if detail.files:
+                        streams = await self._amane_streams(amane, work.amane_id)
             except AmaneError as exc:
                 amane_error = str(exc)
             finally:
@@ -247,8 +249,21 @@ class Service:
             amane_error=amane_error, actors=actors,
             wanted=self.repo.wanted_by_number(number), owned=self.repo.owned(number),
             dismissed=bool(self.repo.dismissed_numbers([key])),
-            scrape_requested_at=self.repo.scrape_status(number)[1], has_amane=amane is not None,
+            scrape_requested_at=self.repo.scrape_status(number)[1], has_amane=amane is not None, streams=streams,
         )
+
+    async def _amane_streams(self, amane: Amane, amane_id: int) -> list[AmaneStream]:
+        """播放流, 缓存 10 分钟 (探测要访问网盘, 比较慢)."""
+        hit = self._stream_cache.get(amane_id)
+        if hit and time.time() - hit[0] < 600:
+            return hit[1]
+        streams = await amane.streams(amane_id)
+        self._stream_cache[amane_id] = (time.time(), streams)
+        return streams
+
+    def stream_allowed(self, path: str) -> bool:
+        """转发播放流只接受作品页列出过的地址, 不是通用代理."""
+        return any(s.href == path for _, streams in self._stream_cache.values() for s in streams)
 
     async def _amane_detail(self, amane: Amane, amane_id: int) -> AmaneDetail:
         """Amane 作品详情, 缓存 10 分钟 (翻看作品页时不用每次都请求)."""
@@ -810,19 +825,16 @@ class Service:
         return PreviewRow(title=title, number=number, tags=tags, brackets=marks, type_name=type_name, reason=reason, known=known)
 
     async def run_amane(self) -> None:
-        """按番号把 Amane 里的作品信息 (海报、封面、演员) 缓存下来, 订阅的女优按名称缓存头像与资料."""
+        """Amane 增量镜像: 按最后修改时间取上次同步之后变化的作品 (通常一次请求), 每天做一次全量 (顺带清掉 Amane 里删掉的);
+        订阅的女优按名称缓存头像与资料; 设置了的话让 Amane 刮削它没有的作品."""
         async with self._locks["amane"]:
             s = self.settings
             amane = self.amane()
             if amane is None:
                 return
             refresh_before = time.time() - s.amane_refresh_days * 86400
-            found = 0
             try:
-                for number in self.repo.numbers_for_amane(refresh_before, _AMANE_PER_RUN):
-                    work = await amane.work(number)
-                    self.repo.save_work(work)
-                    found += work.found
+                changed = await self._mirror_amane(amane)
                 names = {sub.name for sub in self.repo.subscriptions(kind="star")}
                 for name in sorted(names):
                     cached = self.repo.amane_actor(name)
@@ -834,8 +846,33 @@ class Service:
                 raise SiteError(f"Amane: {exc}") from exc
             finally:
                 await amane.aclose()
-            if found or scraped:
-                self.repo.log("info", f"Amane: 取到 {found} 部作品的信息, 让 Amane 刮削 {scraped} 部")
+            if changed or scraped:
+                self.repo.log("info", f"Amane: 同步 {changed} 部作品" + (f", 让 Amane 刮削 {scraped} 部" if scraped else ""))
+
+    async def _mirror_amane(self, amane: Amane) -> int:
+        cursor = self.repo.get_kv("amane_cursor") or ""
+        last_full = float(self.repo.get_kv("amane_full_at") or 0)
+        full = not cursor or time.time() - last_full > 86400
+        started, newest, changed, offset = time.time(), cursor, 0, 0
+        while True:
+            items, total = await amane.changed_works(offset)
+            stop = False
+            for work, updated in items:
+                if not full and updated <= cursor:
+                    stop = True
+                    break
+                self.repo.save_work(work)
+                changed += 1
+                newest = max(newest, updated)
+            offset += len(items)
+            if stop or not items or offset >= total:
+                break
+        if full:
+            self.repo.drop_works_not_seen_since(started)
+            self.repo.set_kv("amane_full_at", str(started))
+        if newest:
+            self.repo.set_kv("amane_cursor", newest)
+        return changed
 
     def _recheck_soon(self) -> float:
         """提交刮削后写入的「上次查询时间」: 15 分钟后到期, 下一轮同步就会重新查."""
@@ -999,6 +1036,13 @@ class WorkDetail:
     scrape_requested_at: float | None = None
     """让 Amane 刮削的时间 (还没刮好时显示)."""
     has_amane: bool = False
+    streams: list[AmaneStream] = field(default_factory=list)
+    """Amane 的播放流 (作品已入库时)."""
+
+    @property
+    def playable(self) -> AmaneStream | None:
+        """浏览器能直接播的那一路 (整个文件, 如「原画」)."""
+        return next((s for s in self.streams if s.direct), None)
 
     @property
     def title(self) -> str:

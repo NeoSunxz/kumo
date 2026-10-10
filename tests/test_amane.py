@@ -20,10 +20,12 @@ from kumo.web import create_app
 METADATA = {
     "items": [
         # 模糊搜索会带出别的番号, 只取完全一致的
-        {"id": 7, "number": "ABC-0011", "title": "别的", "poster_urls": [], "thumb_urls": []},
+        {"id": 7, "number": "ABC-0011", "title": "别的", "poster_urls": [], "thumb_urls": [], "updated_at": "2026-10-01T00:00:00Z"},
+        {"id": 9, "number": "FC2-1234567", "title": "FC2 作品", "poster_urls": [], "thumb_urls": [], "updated_at": "2026-10-02T00:00:00Z"},
         {
             "id": 8, "number": "abc-001", "title": "标题", "release": "2026-09-01", "actors": ["演员甲", "演员乙"],
             "studio": "片商", "poster_urls": ["/api/resources/p1"], "thumb_urls": ["https://img.example/t.jpg"], "file_count": 2,
+            "updated_at": "2026-10-03T00:00:00Z",
         },
     ],
     "total": 2,
@@ -38,6 +40,7 @@ class FakeAmane:
         self.token = token
         self.calls: list[httpx.Request] = []
         self.scraped: list[str] = []
+        self.items = [dict(i) for i in METADATA["items"]]
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.calls.append(request)
@@ -49,11 +52,28 @@ class FakeAmane:
             return httpx.Response(202, json={"id": 100 + len(self.scraped), "type": "scrape"})
         if path == "/api/metadata":
             q = request.url.params.get("search", "").casefold()
-            items = [i for i in METADATA["items"] if q in i["number"].casefold()]
-            return httpx.Response(200, json={"items": items, "total": len(items)})
+            items = [i for i in self.items if q in i["number"].casefold()]
+            if request.url.params.get("sort_by") == "updated_at":
+                items = sorted(items, key=lambda i: i["updated_at"], reverse=True)
+            offset, limit = int(request.url.params.get("offset", 0)), int(request.url.params.get("limit", 20))
+            return httpx.Response(200, json={"items": items[offset:offset + limit], "total": len(items)})
+        if path == "/api/playback/sources":
+            return httpx.Response(200, json={"items": [{"source_id": "neo.localplay", "name": "本地文件"}]})
+        if path == "/api/playback/neo.localplay/8/streams":
+            return httpx.Response(200, json={"items": [
+                {"key": "r1", "name": "本地文件 · 直通", "content_type": "application/vnd.apple.mpegurl", "available": True,
+                 "href": "/api/playback/neo.localplay/8/streams/r1/index.m3u8"},
+                {"key": "f1", "name": "本地文件 · 原画 H264", "content_type": "video/mp4", "available": True,
+                 "href": "/api/playback/neo.localplay/8/streams/f1"},
+            ]})
+        if path == "/api/playback/neo.localplay/8/streams/f1":
+            if request.headers.get("range") == "bytes=0-3":
+                return httpx.Response(206, headers={"content-type": "video/mp4", "content-range": "bytes 0-3/10", "accept-ranges": "bytes"},
+                                      content=b"0123")
+            return httpx.Response(200, headers={"content-type": "video/mp4"}, content=b"0123456789")
         if path == "/api/metadata/8":
             return httpx.Response(200, json={
-                "metadata": {**METADATA["items"][1], "plot": "简介文字", "series": "某系列", "directors": ["某导演"],
+                "metadata": {**next(i for i in METADATA["items"] if i["id"] == 8), "plot": "简介文字", "series": "某系列", "directors": ["某导演"],
                              "tags": ["单体作品", "4K"], "runtime": 97, "score": 4.46,
                              "extrafanart_urls": {"dmm": ["https://img.example/f1.jpg", "https://img.example/f2.jpg"]},
                              "trailer_urls": ["https://img.example/t.mp4"]},
@@ -72,8 +92,7 @@ class FakeAmane:
 @pytest.fixture
 def amane(service: Service, monkeypatch: pytest.MonkeyPatch) -> FakeAmane:
     fake = FakeAmane()
-    service.repo.save_settings(Settings(app_id="test", download_path="/云下载", amane_url="http://amane:8000", amane_token="tk",
-                                        amane_auto_scrape=True))
+    service.repo.save_settings(Settings(app_id="test", download_path="/云下载", amane_url="http://amane:8000", amane_token="tk"))
     monkeypatch.setattr(Service, "amane", lambda self: fake.client() if self.settings.amane_url else None)
     return fake
 
@@ -117,40 +136,49 @@ async def test_image_cache_for_amane(tmp_path: Path) -> None:
     assert len(fake.calls) == 1  # 第二次走磁盘缓存
 
 
-async def test_run_amane_caches_works_and_actors(service: Service, amane: FakeAmane) -> None:
+async def test_run_amane_mirrors_works_and_caches_actors(service: Service, amane: FakeAmane) -> None:
     sub = service.repo.add_subscription(Subscription(source="javbus", kind="star", ident="1", uncensored=False, name="演员甲"))
     assert sub.id
-    service.repo.add_release(Release(source="javbus", number="ABC-001", title="t", date="2026-09-01", cover=None, url="u"), sub.id)
-    service.repo.add_resource(
-        Resource(source="sukebei", tid=1, forum_id=0, forum_name="sukebei", type_name="r", title="XYZ-999", number="XYZ-999",
-                 magnet="magnet:?xt=urn:btih:" + "a" * 40, info_hash="a" * 40)
-    )
     service.add_numbers(["QQQ-100"])
     await service.run_amane()
-    # 下载队列先查, 然后是磁力池, 最后是作品库
-    numbers = [c.url.params["search"] for c in amane.calls if c.url.path == "/api/metadata"]
-    assert numbers == ["QQQ-100", "XYZ-999", "ABC-001"]
-    # Amane 里没有的让 Amane 刮削, 队列里的优先
-    assert amane.scraped == ["QQQ-100", "XYZ-999"]
-    assert service.repo.scrape_status("QQQ-100")[1] is not None
-    assert set(service.repo.works(["ABC-001", "XYZ-999", "QQQ-100"])) == {"ABC-001"}  # 没找到的也记下, 但不当作品返回
+    works = service.repo.works(["ABC-001", "ABC-0011", "FC2-PPV-1234567", "QQQ-100"])
+    assert set(works) == {"ABC-001", "ABC-0011", "FC2-PPV-1234567"}  # 全量镜像; FC2 转成 kumo 的写法
+    assert works["ABC-001"].title == "标题" and works["ABC-001"].file_count == 2
+    assert amane.scraped == []  # 自动刮削默认关闭
 
     group = service.actress_group(sub.id)
     assert group and group.amane and group.amane.found
     assert group.photo == "/img/amane?u=%2Fapi%2Fresources%2Fa1"
     assert group.full_profile["身高"] == "158cm"
 
+    # 增量: 只取上次之后变化的, 一次请求就停
     amane.calls.clear()
+    amane.items.append({"id": 10, "number": "NEW-001", "title": "新刮的", "poster_urls": ["/api/resources/n"], "thumb_urls": [],
+                        "updated_at": "2026-10-04T00:00:00Z"})
     await service.run_amane()
-    assert amane.calls == []  # 刷新周期内不重复查询
+    lists = [c for c in amane.calls if c.url.path == "/api/metadata"]
+    assert len(lists) == 1 and lists[0].url.params["sort_by"] == "updated_at"
+    assert service.repo.works(["NEW-001"])["NEW-001"].poster == "/api/resources/n"
 
 
-async def test_run_amane_refreshes_old_entries(service: Service, amane: FakeAmane) -> None:
-    service.add_numbers(["ABC-001"])
-    service.repo.save_work(Work(number="ABC-001", found=False))
-    service.repo._conn.execute("UPDATE amane_work SET checked_at = ?", (time.time() - 30 * 86400,))
+async def test_full_sync_drops_works_deleted_in_amane(service: Service, amane: FakeAmane) -> None:
     await service.run_amane()
-    assert service.repo.works(["ABC-001"])["ABC-001"].title == "标题"
+    assert "ABC-0011" in service.repo.works(["ABC-0011"])
+    amane.items = [i for i in amane.items if i["number"] != "ABC-0011"]
+    service.repo.set_kv("amane_full_at", "0")  # 到了每天一次的全量
+    await service.run_amane()
+    assert service.repo.works(["ABC-0011"]) == {}
+    assert "ABC-001" in service.repo.works(["ABC-001"])
+
+
+async def test_auto_scrape_when_enabled(service: Service, amane: FakeAmane) -> None:
+    service.repo.save_settings(Settings(app_id="test", amane_url="http://amane:8000", amane_token="tk", amane_auto_scrape=True))
+    service.repo.add_resource(Resource(source="sukebei", tid=1, forum_id=0, forum_name="", type_name="", title="XYZ-999",
+                                       number="XYZ-999", magnet="magnet:?xt=urn:btih:" + "a" * 40, info_hash="a" * 40))
+    service.add_numbers(["QQQ-100", "ABC-001"])
+    await service.run_amane()
+    assert amane.scraped == ["QQQ-100", "XYZ-999"]  # Amane 里没有的; 下载队列里的优先; ABC-001 已有不提交
+    assert service.repo.scrape_status("QQQ-100")[1] is not None
 
 
 async def test_run_amane_without_config_does_nothing(service: Service) -> None:
@@ -316,3 +344,15 @@ def test_clear_scrape_requests(service: Service, amane: FakeAmane, tmp_path: Pat
         r = c.post("/settings/amane-clear-scrapes", follow_redirects=False)
         assert "1" in r.headers["location"]
     assert service.repo.scrape_status("R-100") == (False, None)
+
+
+def test_work_page_plays_through_kumo(service: Service, amane: FakeAmane, tmp_path: Path) -> None:
+    service.add_numbers(["ABC-001"])
+    with TestClient(create_app(Env(data_dir=tmp_path, password=""), service=service)) as c:
+        assert c.get("/play", params={"p": "/api/playback/neo.localplay/8/streams/f1"}).status_code == 404  # 没打开作品页前不放行
+        page = c.get("/works/ABC-001").text
+        assert "<video" in page and "/play?p=/api/playback/neo.localplay/8/streams/f1" in page
+        assert "本地文件 · 直通" in page
+        r = c.get("/play", params={"p": "/api/playback/neo.localplay/8/streams/f1"}, headers={"Range": "bytes=0-3"})
+        assert r.status_code == 206 and r.content == b"0123" and r.headers["content-range"] == "bytes 0-3/10"
+        assert c.get("/play", params={"p": "/api/tasks"}).status_code == 404  # 不是通用代理

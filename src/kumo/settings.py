@@ -109,7 +109,8 @@ class Settings(BaseModel):
     """Amane 的地址, 如 ``http://192.168.100.110:8000``; 为空不接入."""
     amane_token: str = ""
     """Amane 的 API token (Amane 未设 token 时留空)."""
-    amane_interval_minutes: float = Field(default=30.0, ge=5)
+    amane_interval_minutes: float = Field(default=5.0, ge=1)
+    """同步间隔; 增量同步一般只要一次请求, 可以很短."""
     amane_refresh_days: float = Field(default=7.0, ge=1)
     """已查过的番号多久后再查一次 (Amane 里可能刚刮削完)."""
     amane_auto_scrape: bool = False
